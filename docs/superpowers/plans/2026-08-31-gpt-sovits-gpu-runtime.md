@@ -134,13 +134,13 @@
 - Create: `runtime/gpt_sovits_gpu/README.md`
 - Create: `tests/test_gpu_sidecar_protocol.py`
 
-- [ ] Pin a verified official GPT-SoVITS commit and document upstream license/source.
-- [ ] Write protocol tests with a fake TTS pipeline for authentication, allowed-root paths, Japanese requests, PCM chunks, cancellation, and shutdown.
-- [ ] Implement the FastAPI sidecar wrapper without exposing official arbitrary-path/control endpoints.
-- [ ] Load v2Pro/v2ProPlus custom weights with CUDA FP16 and fixed batch size 1.
-- [ ] Cache reference features where supported and emit metrics without logging protected content.
-- [ ] Run protocol tests in the lightweight development environment.
-- [ ] Commit: `feat: add pinned gpt-sovits gpu sidecar`
+- [x] Pin a verified official GPT-SoVITS commit and document upstream license/source.
+- [x] Write protocol tests with a fake TTS pipeline for authentication, allowed-root paths, Japanese requests, PCM chunks, cancellation, and shutdown.
+- [x] Implement a standard-library HTTP sidecar wrapper without exposing official arbitrary-path/control endpoints.
+- [x] Load v2Pro/v2ProPlus custom weights with CUDA FP16 and fixed batch size 1.
+- [x] Reuse the upstream pipeline reference cache and emit metrics without logging protected content.
+- [x] Run protocol tests in the lightweight development environment.
+- [x] Commit: `feat: add pinned gpt-sovits gpu sidecar`
 
 ## Task 7: Windows CU126 Runtime Builder and Packaging Boundaries
 
