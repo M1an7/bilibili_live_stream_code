@@ -28,6 +28,14 @@
 
 `speech-preview` 只在 Vite 开发环境生效，不会在生产构建中创建模拟登录。
 
+桌面端会优先使用页面提供的 Web Speech API；如果 QtWebEngine 不支持，则自动降级到本机系统语音：
+
+- Windows（以及可调用 `powershell.exe` 的 WSL）：使用内置 SAPI；
+- macOS：使用内置 `say`；
+- Linux：使用 `espeak-ng` 或 `espeak`，未安装时界面会给出提示。
+
+系统语音播报仅占用少量 CPU 和内存，不使用 GPU 或云服务器。后续个性化音色可以继续接入同一语音服务和队列接口。
+
 ### 环境要求
 
 - **Python**: 3.9+

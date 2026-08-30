@@ -27,16 +27,18 @@ const loadSettings = (storage) => {
 export const createSpeechService = ({
   synth = null,
   Utterance = null,
+  backend = null,
   storage = null,
   now = Date.now,
 } = {}) => {
-  const engineAvailable = Boolean(
+  const browserAvailable = Boolean(
     synth
     && Utterance
     && typeof synth.speak === 'function'
     && typeof synth.cancel === 'function'
     && typeof synth.getVoices === 'function',
   );
+  let activeEngine = browserAvailable ? 'browser' : null;
   const saved = loadSettings(storage);
   const listeners = new Set();
   const voiceObjects = new Map();
@@ -46,16 +48,18 @@ export const createSpeechService = ({
   let removeVoiceListener = null;
 
   const state = {
-    supported: engineAvailable,
+    supported: browserAvailable,
     enabled: false,
-    status: engineAvailable ? 'idle' : 'unsupported',
+    status: browserAvailable ? 'idle' : 'unsupported',
     voices: [],
     selectedVoiceURI: saved.voiceURI,
     rate: saved.rate,
     volume: saved.volume,
     queueLength: 0,
-    error: engineAvailable ? '' : '系统语音不可用',
+    error: browserAvailable ? '' : (backend ? '正在检测桌面语音...' : '系统语音不可用'),
   };
+
+  const engineAvailable = () => Boolean(activeEngine);
 
   const snapshot = () => ({
     ...state,
@@ -81,7 +85,7 @@ export const createSpeechService = ({
   };
 
   const refreshVoices = () => {
-    if (!engineAvailable) return [];
+    if (activeEngine !== 'browser') return state.voices;
     const discovered = synth.getVoices() || [];
     voiceObjects.clear();
     state.voices = discovered.map((voice) => {
@@ -102,6 +106,53 @@ export const createSpeechService = ({
     }
     notify();
     return state.voices;
+  };
+
+  const selectPreferredVoice = () => {
+    const available = new Set(state.voices.map(voice => voice.voiceURI));
+    if (available.has(state.selectedVoiceURI)) return;
+    const preferred = state.voices.find(voice => voice.default)
+      || state.voices.find(voice => String(voice.lang).toLowerCase().startsWith('zh'))
+      || state.voices[0];
+    state.selectedVoiceURI = preferred?.voiceURI || '';
+  };
+
+  const initialize = async () => {
+    if (browserAvailable) {
+      refreshVoices();
+      return snapshot();
+    }
+    if (!backend || typeof backend.getCapabilities !== 'function') {
+      return snapshot();
+    }
+
+    try {
+      const result = await backend.getCapabilities();
+      const capabilities = result?.code === 0 ? result.data : null;
+      if (!capabilities?.supported) {
+        state.supported = false;
+        state.status = 'unsupported';
+        state.error = capabilities?.error || result?.msg || '桌面系统语音不可用';
+        notify();
+        return snapshot();
+      }
+
+      activeEngine = 'backend';
+      state.supported = true;
+      state.status = state.enabled ? 'ready' : 'idle';
+      state.voices = Array.isArray(capabilities.voices)
+        ? capabilities.voices.map(voice => ({ ...voice }))
+        : [];
+      state.error = capabilities.error || '';
+      selectPreferredVoice();
+      notify();
+    } catch (error) {
+      state.supported = false;
+      state.status = 'unsupported';
+      state.error = error?.message || '桌面系统语音检测失败';
+      notify();
+    }
+    return snapshot();
   };
 
   const purgeStale = () => {
@@ -125,7 +176,7 @@ export const createSpeechService = ({
   };
 
   const pump = () => {
-    if (!state.enabled || current || !engineAvailable) return;
+    if (!state.enabled || current || !engineAvailable()) return;
     purgeStale();
     updateQueueState();
     const item = queue.shift();
@@ -136,10 +187,6 @@ export const createSpeechService = ({
       return;
     }
 
-    const utterance = new Utterance(item.text);
-    utterance.voice = voiceObjects.get(state.selectedVoiceURI) || null;
-    utterance.rate = state.rate;
-    utterance.volume = state.volume;
     const token = ++playbackToken;
     current = { ...item, startedAt: now(), token };
     state.status = 'speaking';
@@ -153,10 +200,30 @@ export const createSpeechService = ({
       pump();
     };
 
-    utterance.onend = () => finish();
-    utterance.onerror = event => finish(event?.error || '语音播放失败');
-    synth.speak(utterance);
+    if (activeEngine === 'browser') {
+      const utterance = new Utterance(item.text);
+      utterance.voice = voiceObjects.get(state.selectedVoiceURI) || null;
+      utterance.rate = state.rate;
+      utterance.volume = state.volume;
+      utterance.onend = () => finish();
+      utterance.onerror = event => finish(event?.error || '语音播放失败');
+      synth.speak(utterance);
+      notify();
+      return;
+    }
+
     notify();
+    Promise.resolve(backend.speak(item.text, {
+      voiceURI: state.selectedVoiceURI,
+      rate: state.rate,
+      volume: state.volume,
+    })).then((result) => {
+      if (result?.code !== 0) {
+        finish(result?.msg || '桌面语音播放失败');
+        return;
+      }
+      finish();
+    }).catch(error => finish(error?.message || '桌面语音播放失败'));
   };
 
   const clear = () => {
@@ -165,13 +232,14 @@ export const createSpeechService = ({
     playbackToken += 1;
     const wasPlaying = Boolean(current);
     current = null;
-    if (engineAvailable && wasPlaying) synth.cancel();
+    if (wasPlaying && activeEngine === 'browser') synth.cancel();
+    if (wasPlaying && activeEngine === 'backend') void backend.stop?.();
     state.status = state.enabled ? 'ready' : 'idle';
     notify();
   };
 
   const setEnabled = (enabled) => {
-    if (enabled && !engineAvailable) return false;
+    if (enabled && !engineAvailable()) return false;
     const nextEnabled = Boolean(enabled);
     if (state.enabled === nextEnabled) return true;
     state.enabled = nextEnabled;
@@ -187,7 +255,7 @@ export const createSpeechService = ({
   };
 
   const enqueue = (text, { createdAt = now() } = {}) => {
-    if (!engineAvailable || !state.enabled) return false;
+    if (!engineAvailable() || !state.enabled) return false;
     const normalized = typeof text === 'string' ? text.trim() : '';
     if (!normalized) return false;
 
@@ -210,9 +278,25 @@ export const createSpeechService = ({
     if (!current) return false;
     playbackToken += 1;
     current = null;
-    synth.cancel();
     state.status = 'ready';
-    pump();
+    if (activeEngine === 'browser') {
+      synth.cancel();
+      pump();
+      return true;
+    }
+
+    notify();
+    Promise.resolve().then(() => backend.stop()).then((result) => {
+      if (result?.code !== 0) {
+        state.error = result?.msg || '停止桌面语音失败';
+        notify();
+        return;
+      }
+      pump();
+    }).catch((error) => {
+      state.error = error?.message || '停止桌面语音失败';
+      notify();
+    });
     return true;
   };
 
@@ -236,7 +320,7 @@ export const createSpeechService = ({
   };
 
   const voiceChangeHandler = () => refreshVoices();
-  if (engineAvailable) {
+  if (browserAvailable) {
     if (typeof synth.addEventListener === 'function') {
       synth.addEventListener('voiceschanged', voiceChangeHandler);
       removeVoiceListener = () => synth.removeEventListener?.('voiceschanged', voiceChangeHandler);
@@ -250,6 +334,7 @@ export const createSpeechService = ({
 
   return {
     getState: snapshot,
+    initialize,
     subscribe(listener) {
       listeners.add(listener);
       listener(snapshot());
@@ -271,8 +356,32 @@ export const createSpeechService = ({
   };
 };
 
+let desktopBridgePromise = null;
+const getDesktopBridge = () => {
+  if (!desktopBridgePromise) {
+    desktopBridgePromise = import('../api/bridge').then(({ useBridge }) => useBridge());
+  }
+  return desktopBridgePromise;
+};
+
+const desktopBackend = typeof window !== 'undefined' ? {
+  async getCapabilities() {
+    const bridge = await getDesktopBridge();
+    return bridge.getSpeechCapabilities();
+  },
+  async speak(text, options) {
+    const bridge = await getDesktopBridge();
+    return bridge.speakText(text, options.voiceURI, options.rate, options.volume);
+  },
+  async stop() {
+    const bridge = await getDesktopBridge();
+    return bridge.stopSpeech();
+  },
+} : null;
+
 export const speechService = createSpeechService({
   synth: typeof window !== 'undefined' ? window.speechSynthesis : null,
   Utterance: typeof window !== 'undefined' ? window.SpeechSynthesisUtterance : null,
+  backend: desktopBackend,
   storage: typeof window !== 'undefined' ? window.localStorage : null,
 });

@@ -202,6 +202,17 @@ export const useBridge = () => {
       return res;
     },
 
+    // 系统语音（Web Speech 不可用时由桌面后端提供）
+    async getSpeechCapabilities() {
+      return await callPy('get_speech_capabilities');
+    },
+    async speakText(text, voiceURI, rate, volume) {
+      return await callPy('speak_text', text, voiceURI, rate, volume);
+    },
+    async stopSpeech() {
+      return await callPy('stop_speech');
+    },
+
     // App 配置
     async getAppConfig() {
       const res = await callPy('get_app_config');

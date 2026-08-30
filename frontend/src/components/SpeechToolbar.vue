@@ -34,6 +34,7 @@ const handleVolume = event => props.service.setVolume(Number(event.target.value)
 
 onMounted(() => {
   unsubscribe = props.service.subscribe(applyState);
+  props.service.initialize?.();
   props.service.refreshVoices();
 });
 

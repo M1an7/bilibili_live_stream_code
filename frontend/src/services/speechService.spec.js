@@ -130,4 +130,86 @@ describe('createSpeechService', () => {
     expect(unsupported.setEnabled(true)).toBe(false);
     expect(unsupported.enqueue('不会播放')).toBe(false);
   });
+
+  it('falls back to the desktop speech backend when Web Speech is unavailable', async () => {
+    let finishSpeech;
+    const backend = {
+      getCapabilities: vi.fn().mockResolvedValue({
+        code: 0,
+        data: {
+          supported: true,
+          engine: 'espeak-ng',
+          voices: [
+            { name: 'Mandarin', voiceURI: 'cmn', lang: 'zh-CN', default: true },
+          ],
+        },
+      }),
+      speak: vi.fn(() => new Promise((resolve) => {
+        finishSpeech = resolve;
+      })),
+      stop: vi.fn().mockResolvedValue({ code: 0 }),
+    };
+    const desktop = createSpeechService({
+      synth: null,
+      Utterance: null,
+      backend,
+      storage,
+      now: () => clock,
+    });
+
+    await desktop.initialize();
+    expect(desktop.getState()).toMatchObject({
+      supported: true,
+      selectedVoiceURI: 'cmn',
+    });
+
+    desktop.setEnabled(true);
+    desktop.enqueue('桌面语音测试');
+    expect(backend.speak).toHaveBeenCalledWith('桌面语音测试', {
+      voiceURI: 'cmn',
+      rate: 1,
+      volume: 1,
+    });
+
+    finishSpeech({ code: 0 });
+    await vi.waitFor(() => {
+      expect(desktop.getState().status).toBe('ready');
+    });
+  });
+
+  it('waits for desktop stop confirmation before speaking the item after skip', async () => {
+    let finishStop;
+    const backend = {
+      getCapabilities: vi.fn().mockResolvedValue({
+        code: 0,
+        data: { supported: true, voices: [] },
+      }),
+      speak: vi.fn(() => new Promise(() => {})),
+      stop: vi.fn(() => new Promise((resolve) => {
+        finishStop = resolve;
+      })),
+    };
+    const desktop = createSpeechService({
+      synth: null,
+      Utterance: null,
+      backend,
+      storage,
+      now: () => clock,
+    });
+    await desktop.initialize();
+    desktop.setEnabled(true);
+    desktop.enqueue('第一条');
+    desktop.enqueue('第二条');
+
+    desktop.skip();
+    expect(backend.speak).toHaveBeenCalledTimes(1);
+
+    await vi.waitFor(() => {
+      expect(backend.stop).toHaveBeenCalledTimes(1);
+    });
+    finishStop({ code: 0 });
+    await vi.waitFor(() => {
+      expect(backend.speak).toHaveBeenCalledTimes(2);
+    });
+  });
 });

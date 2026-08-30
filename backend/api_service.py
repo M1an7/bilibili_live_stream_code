@@ -10,6 +10,7 @@ from backend.services.user_service import UserService
 from backend.services.live_service import LiveService
 from backend.services.auth_service import AuthService
 from backend.services.danmu_service import DanmuService
+from backend.services.system_speech_service import SystemSpeechService
 
 logger = logging.getLogger("ApiService")
 
@@ -40,6 +41,7 @@ class ApiService:
         self.live_service = LiveService(self.api_client, self.config_manager, self.session_state)
         self.auth_service = AuthService(self.api_client, self.user_service, self.live_service, self.session_state)
         self.danmu_service = DanmuService(self.api_client, self.session_state)
+        self.speech_service = SystemSpeechService()
         
         # 设置弹幕回调
         self.danmu_service.set_callback(self._on_danmu_message)
@@ -154,6 +156,16 @@ class ApiService:
     def send_danmu(self, msg):
         """发送弹幕"""
         return self.danmu_service.send_danmu(msg)
+
+    # --- System Speech Methods ---
+    def get_speech_capabilities(self):
+        return self.speech_service.get_capabilities()
+
+    def speak_text(self, text, voice_uri="", rate=1.0, volume=1.0):
+        return self.speech_service.speak(text, voice_uri, rate, volume)
+
+    def stop_speech(self):
+        return self.speech_service.stop()
 
     # --- App Config Methods ---
     def get_app_config(self):
