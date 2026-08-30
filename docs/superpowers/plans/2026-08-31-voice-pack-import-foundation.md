@@ -218,7 +218,7 @@ git commit -m "feat: build and validate staged voice packs"
 - Produces: `VoicePackRegistry.list_packs() -> list[dict]`
 - Produces: `VoiceJobManager.start_build(request: dict) -> str`
 - Produces: `VoiceJobManager.get(job_id: str) -> dict`
-- Produces API: `start_voice_pack_build(request)`, `get_voice_job(job_id)`, `list_voice_packs()`
+- Produces API: `choose_voice_source(kind)`, `start_voice_pack_build(request)`, `get_voice_job(job_id)`, `list_voice_packs()`
 
 - [ ] **Step 1: Write failing registry and job tests**
 
@@ -272,7 +272,7 @@ Completed jobs install through the registry. Failures remove their staging direc
 
 - [ ] **Step 5: Wire ApiService and shutdown cleanup**
 
-`ApiService.__init__` constructs paths, validator, builder, registry, and jobs. Public methods wrap exceptions as `{"code": -1, "msg": ..., "error": {"code": ...}}`; successful methods return `{"code": 0, "data": ...}`. `main.cleanup_services()` calls `api.voice_jobs.shutdown()` after stopping speech.
+`ApiService.__init__` constructs paths, validator, builder, registry, and jobs. `choose_voice_source(kind)` lazily opens the active pywebview window's native file dialog with an allowlist for `gpt`, `sovits`, `reference`, and `license`; cancellation returns an empty path without changing wizard state. Public methods wrap exceptions as `{"code": -1, "msg": ..., "error": {"code": ...}}`; successful methods return `{"code": 0, "data": ...}`. `main.cleanup_services()` calls `api.voice_jobs.shutdown()` after stopping speech.
 
 - [ ] **Step 6: Run backend tests and verify GREEN**
 
@@ -297,8 +297,8 @@ git commit -m "feat: expose background voice pack imports"
 - Modify: `frontend/src/services/speechService.spec.js`
 
 **Interfaces:**
-- Consumes API: `start_voice_pack_build`, `get_voice_job`, `list_voice_packs`
-- Produces bridge methods: `startVoicePackBuild(request)`, `getVoiceJob(jobId)`, `listVoicePacks()`
+- Consumes API: `choose_voice_source`, `start_voice_pack_build`, `get_voice_job`, `list_voice_packs`
+- Produces bridge methods: `chooseVoiceSource(kind)`, `startVoicePackBuild(request)`, `getVoiceJob(jobId)`, `listVoicePacks()`
 - Produces speech state: `systemVoices`, `voicePacks`, `selectedVoiceKey`
 - Maintains compatibility: existing `voiceURI` settings migrate to `system:<voiceURI>`
 
@@ -402,7 +402,7 @@ The modal contains:
 3. Display name, generated/editable voice ID, authorization file, and required permission checkbox.
 4. Summary, submit, progress, and terminal result.
 
-The initial implementation uses ordinary path text inputs in browser development and backend/native picker paths when pywebview picker methods become available. Client validation blocks missing fields, wrong extensions, unsupported versions, empty Japanese text, and unconfirmed permissions. After submission it polls every 250 ms, stops polling on terminal state or unmount, and displays `runtime_required` as `文件已安全导入，等待安装 CPU 运行时后试听并启用`.
+The desktop build uses `chooseVoiceSource(kind)` to open native file dialogs; browser development keeps ordinary path text inputs so the wizard remains testable without pywebview. Client validation blocks missing fields, wrong extensions, unsupported versions, empty Japanese text, and unconfirmed permissions. After submission it polls every 250 ms, stops polling on terminal state or unmount, and displays `runtime_required` as `文件已安全导入，等待安装 CPU 运行时后试听并启用`.
 
 - [ ] **Step 5: Integrate the modal in DanmuPanel**
 
