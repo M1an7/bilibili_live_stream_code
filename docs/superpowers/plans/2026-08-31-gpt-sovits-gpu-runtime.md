@@ -51,12 +51,12 @@
 - `GpuRuntimeManager.prepare(record)` / `synthesize(text, ...)` / `cancel()` / `shutdown()`
 - States: `missing|stopped|starting|ready|busy|stopping|failed`
 
-- [ ] Write failing tests using a Python fake sidecar for random token authentication, loopback handshake, startup timeout, one restart, structured CUDA errors, cancellation, process-tree cleanup, and no process while idle.
-- [ ] Run focused tests and record RED.
-- [ ] Implement HTTP streaming client with bounded reads and structured errors.
-- [ ] Implement the locked state machine, random port/token, safe subprocess environment, log redaction, metrics, and idempotent shutdown.
-- [ ] Verify fake-sidecar tests and full backend suite.
-- [ ] Commit: `feat: manage authenticated gpu speech sidecar`
+- [x] Write failing tests using a Python fake sidecar for random token authentication, loopback handshake, startup timeout, one restart, structured CUDA errors, cancellation, process-tree cleanup, and no process while idle.
+- [x] Run focused tests and record RED.
+- [x] Implement HTTP streaming client with bounded reads and structured errors.
+- [x] Implement the locked state machine, random port/token, safe subprocess environment, log redaction, metrics, and idempotent shutdown.
+- [x] Verify fake-sidecar tests and full backend suite.
+- [x] Commit: `feat: manage authenticated gpu speech sidecar`
 
 ## Task 3: Streaming PCM Player, Voice Health, and Personalized Speech Service
 
