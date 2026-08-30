@@ -116,13 +116,13 @@
 - Modify: `frontend/src/components/DanmuPanel.vue`
 - Modify: `frontend/src/components/DanmuPanel.spec.js`
 
-- [ ] Write failing tests proving the complete `voice_key` reaches the backend, enabling a pack waits for GPU preparation, failures stay disabled, and system voice behavior remains unchanged.
-- [ ] Add bridge methods for runtime install, status, prepare, preview, and release.
-- [ ] Add `loading_gpu`, `warming`, `gpu_error` states and preserve queue semantics.
-- [ ] Add runtime ZIP/directory/data-root controls to step 4 and show GPU, runtime, peak VRAM, and first-chunk metrics.
-- [ ] Ensure `runtime_required` packs are management-visible and `ready` packs appear in the selector.
-- [ ] Run all frontend tests and production build.
-- [ ] Commit: `feat: add gpu voice preparation experience`
+- [x] Write failing tests proving the complete `voice_key` reaches the backend, enabling a pack waits for GPU preparation, failures stay disabled, and system voice behavior remains unchanged.
+- [x] Add bridge methods for runtime install, status, prepare, preview, and release.
+- [x] Add `loading_gpu`, `warming`, `gpu_error` states and preserve queue semantics.
+- [x] Add runtime ZIP/directory/data-root controls to step 4 and show GPU, runtime, peak VRAM, and first-chunk metrics.
+- [x] Ensure `runtime_required` packs are management-visible and `ready` packs appear in the selector.
+- [x] Run all frontend tests and production build.
+- [x] Commit: `feat: add gpu voice preparation experience`
 
 ## Task 6: Pinned Official GPT-SoVITS GPU Sidecar
 

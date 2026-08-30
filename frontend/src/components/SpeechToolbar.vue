@@ -21,6 +21,9 @@ const statusText = computed(() => ({
   idle: '未开启',
   ready: '等待弹幕',
   speaking: '正在播报',
+  loading_gpu: '启动 GPU',
+  warming: '音色预热',
+  gpu_error: 'GPU 异常',
 }[state.status] || '未知状态'));
 const systemVoices = computed(() => state.voices.filter(voice => voice.kind !== 'pack'));
 const personalizedVoices = computed(() => state.voices.filter(voice => voice.kind === 'pack'));
@@ -58,7 +61,7 @@ onUnmounted(() => {
           data-test="speech-enabled"
           type="checkbox"
           :checked="state.enabled"
-          :disabled="!state.supported"
+          :disabled="!state.supported || state.status === 'loading_gpu' || state.status === 'warming'"
           @change="handleEnabled"
         >
         <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -159,7 +162,7 @@ onUnmounted(() => {
         模拟弹幕
       </button>
 
-      <p v-if="!state.supported" class="speech-error">
+      <p v-if="!state.supported || state.status === 'gpu_error'" class="speech-error">
         {{ state.error || '当前系统不支持语音播报' }}
       </p>
     </div>

@@ -62,10 +62,12 @@ export const createSpeechService = ({
     rate: saved.rate,
     volume: saved.volume,
     queueLength: 0,
+    runtime: null,
     error: browserAvailable ? '' : (backend ? '正在检测桌面语音...' : '系统语音不可用'),
   };
 
-  const engineAvailable = () => Boolean(activeEngine);
+  const selectedIsPack = () => state.selectedVoiceKey.startsWith('pack:');
+  const engineAvailable = () => Boolean(activeEngine || (backend && selectedIsPack()));
 
   const snapshot = () => ({
     ...state,
@@ -123,7 +125,7 @@ export const createSpeechService = ({
     });
     rebuildSelectableVoices();
 
-    if (!state.voices.some(voice => voice.voiceKey === state.selectedVoiceKey)) {
+    if (!state.selectedVoiceKey.startsWith('pack:') && !state.voices.some(voice => voice.voiceKey === state.selectedVoiceKey)) {
       const preferred = discovered.find(voice => voice.default)
         || discovered.find(voice => String(voice.lang).toLowerCase().startsWith('zh'))
         || discovered[0];
@@ -169,6 +171,8 @@ export const createSpeechService = ({
     if (browserAvailable) {
       refreshVoices();
       await refreshVoicePacks();
+      selectPreferredVoice();
+      notify();
       return snapshot();
     }
     if (!backend || typeof backend.getCapabilities !== 'function') {
@@ -178,10 +182,14 @@ export const createSpeechService = ({
     try {
       const result = await backend.getCapabilities();
       const capabilities = result?.code === 0 ? result.data : null;
+      await refreshVoicePacks();
+      const hasReadyPack = state.voicePacks.some(pack => pack.selectable && pack.health === 'ready');
       if (!capabilities?.supported) {
-        state.supported = false;
-        state.status = 'unsupported';
+        activeEngine = hasReadyPack ? 'backend' : null;
+        state.supported = hasReadyPack;
+        state.status = hasReadyPack ? 'idle' : 'unsupported';
         state.error = capabilities?.error || result?.msg || '桌面系统语音不可用';
+        selectPreferredVoice();
         notify();
         return snapshot();
       }
@@ -199,7 +207,6 @@ export const createSpeechService = ({
       rebuildSelectableVoices();
       state.error = capabilities.error || '';
       selectPreferredVoice();
-      await refreshVoicePacks();
       notify();
     } catch (error) {
       state.supported = false;
@@ -243,7 +250,8 @@ export const createSpeechService = ({
     }
 
     const token = ++playbackToken;
-    current = { ...item, startedAt: now(), token };
+    const useBackend = item.voiceKey.startsWith('pack:') || activeEngine === 'backend';
+    current = { ...item, startedAt: now(), token, playbackEngine: useBackend ? 'backend' : 'browser' };
     state.status = 'speaking';
     state.error = '';
     updateQueueState();
@@ -255,11 +263,11 @@ export const createSpeechService = ({
       pump();
     };
 
-    if (activeEngine === 'browser') {
+    if (!useBackend) {
       const utterance = new Utterance(item.text);
-      utterance.voice = voiceObjects.get(state.selectedVoiceURI) || null;
-      utterance.rate = state.rate;
-      utterance.volume = state.volume;
+      utterance.voice = voiceObjects.get(item.voiceURI) || null;
+      utterance.rate = item.rate;
+      utterance.volume = item.volume;
       utterance.onend = () => finish();
       utterance.onerror = event => finish(event?.error || '语音播放失败');
       synth.speak(utterance);
@@ -269,9 +277,10 @@ export const createSpeechService = ({
 
     notify();
     Promise.resolve(backend.speak(item.text, {
-      voiceURI: state.selectedVoiceURI,
-      rate: state.rate,
-      volume: state.volume,
+      voiceURI: item.voiceURI,
+      voiceKey: item.voiceKey,
+      rate: item.rate,
+      volume: item.volume,
     })).then((result) => {
       if (result?.code !== 0) {
         finish(result?.msg || '桌面语音播放失败');
@@ -286,9 +295,10 @@ export const createSpeechService = ({
     updateQueueState();
     playbackToken += 1;
     const wasPlaying = Boolean(current);
+    const playbackEngine = current?.playbackEngine;
     current = null;
-    if (wasPlaying && activeEngine === 'browser') synth.cancel();
-    if (wasPlaying && activeEngine === 'backend') void backend.stop?.();
+    if (wasPlaying && playbackEngine === 'browser') synth.cancel();
+    if (wasPlaying && playbackEngine === 'backend') void backend.stop?.();
     state.status = state.enabled ? 'ready' : 'idle';
     notify();
   };
@@ -297,11 +307,45 @@ export const createSpeechService = ({
     if (enabled && !engineAvailable()) return false;
     const nextEnabled = Boolean(enabled);
     if (state.enabled === nextEnabled) return true;
-    state.enabled = nextEnabled;
     if (!nextEnabled) {
+      const releaseGpu = selectedIsPack();
+      state.enabled = false;
       clear();
+      if (releaseGpu) return Promise.resolve(backend?.release?.()).then(() => true).catch(() => true);
       return true;
     }
+    if (selectedIsPack()) {
+      state.enabled = false;
+      state.status = 'loading_gpu';
+      state.error = '';
+      notify();
+      return Promise.resolve(backend.prepare(state.selectedVoiceKey)).then(async (result) => {
+        if (result?.code !== 0) {
+          state.enabled = false;
+          state.status = 'gpu_error';
+          state.error = result?.msg || 'GPU 音色准备失败';
+          notify();
+          return false;
+        }
+        state.runtime = result?.data?.runtime || null;
+        state.status = 'warming';
+        notify();
+        await refreshVoicePacks();
+        state.enabled = true;
+        state.status = 'ready';
+        state.error = '';
+        pump();
+        notify();
+        return true;
+      }).catch((error) => {
+        state.enabled = false;
+        state.status = 'gpu_error';
+        state.error = error?.message || 'GPU 音色准备失败';
+        notify();
+        return false;
+      });
+    }
+    state.enabled = true;
     state.status = 'ready';
     refreshVoices();
     pump();
@@ -322,6 +366,10 @@ export const createSpeechService = ({
       text: normalized,
       createdAt,
       estimatedDuration: estimateDurationMs(normalized, state.rate),
+      voiceKey: state.selectedVoiceKey,
+      voiceURI: state.selectedVoiceURI,
+      rate: state.rate,
+      volume: state.volume,
     });
     updateQueueState();
     notify();
@@ -331,10 +379,11 @@ export const createSpeechService = ({
 
   const skip = () => {
     if (!current) return false;
+    const playbackEngine = current.playbackEngine;
     playbackToken += 1;
     current = null;
     state.status = 'ready';
-    if (activeEngine === 'browser') {
+    if (playbackEngine === 'browser') {
       synth.cancel();
       pump();
       return true;
@@ -361,6 +410,10 @@ export const createSpeechService = ({
     state.selectedVoiceURI = state.selectedVoiceKey.startsWith('system:')
       ? state.selectedVoiceKey.slice(7)
       : '';
+    if (state.enabled) {
+      state.enabled = false;
+      clear();
+    }
     persist();
     notify();
   };
@@ -410,6 +463,7 @@ export const createSpeechService = ({
     clear,
     destroy() {
       clear();
+      if (selectedIsPack()) void backend?.release?.();
       removeVoiceListener?.();
       listeners.clear();
     },
@@ -431,7 +485,7 @@ const desktopBackend = typeof window !== 'undefined' ? {
   },
   async speak(text, options) {
     const bridge = await getDesktopBridge();
-    return bridge.speakText(text, options.voiceURI, options.rate, options.volume);
+    return bridge.speakText(text, options.voiceURI, options.rate, options.volume, options.voiceKey);
   },
   async stop() {
     const bridge = await getDesktopBridge();
@@ -440,6 +494,14 @@ const desktopBackend = typeof window !== 'undefined' ? {
   async listVoicePacks() {
     const bridge = await getDesktopBridge();
     return bridge.listVoicePacks();
+  },
+  async prepare(voiceKey) {
+    const bridge = await getDesktopBridge();
+    return bridge.prepareVoice(voiceKey);
+  },
+  async release() {
+    const bridge = await getDesktopBridge();
+    return bridge.releasePersonalizedVoice();
   },
 } : null;
 

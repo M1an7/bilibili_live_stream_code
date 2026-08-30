@@ -70,6 +70,17 @@ describe('SpeechToolbar', () => {
     expect(wrapper.get('[data-test="speech-queue"]').text()).toContain('2');
   });
 
+  it('shows GPU preparation states and keeps the switch disabled while loading', async () => {
+    const service = makeService({ status: 'loading_gpu' });
+    const wrapper = mount(SpeechToolbar, { props: { service } });
+    expect(wrapper.get('[data-test="speech-status"]').text()).toContain('启动 GPU');
+    expect(wrapper.get('[data-test="speech-enabled"]').attributes('disabled')).toBeDefined();
+
+    service.emit({ status: 'gpu_error', error: '显存不足' });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain('显存不足');
+  });
+
   it('shows an unsupported explanation and disables enable control', () => {
     const wrapper = mount(SpeechToolbar, {
       props: {

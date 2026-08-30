@@ -30,7 +30,20 @@ const job = reactive({
   message: '',
   result: null,
 });
+const runtime = reactive({
+  sourceType: 'zip',
+  sourcePath: '',
+  root: '',
+  state: 'checking',
+  id: '',
+  status: 'idle',
+  phase: '',
+  progress: 0,
+  message: '',
+  metrics: null,
+});
 let pollTimer = null;
+let runtimePollTimer = null;
 
 const reset = () => {
   step.value = 1;
@@ -47,12 +60,29 @@ const reset = () => {
     permissionsConfirmed: false,
   });
   Object.assign(job, { id: '', status: 'idle', stage: '', progress: 0, message: '', result: null });
+  Object.assign(runtime, {
+    sourceType: 'zip', sourcePath: '', state: 'checking', id: '', status: 'idle',
+    phase: '', progress: 0, message: '', metrics: null,
+  });
+};
+
+const refreshRuntimeStatus = async () => {
+  if (typeof props.bridge.getGpuRuntimeStatus !== 'function') return;
+  const response = await props.bridge.getGpuRuntimeStatus();
+  if (response?.code !== 0) {
+    runtime.state = 'missing';
+    runtime.message = response?.msg || '无法读取 GPU 运行时状态';
+    return;
+  }
+  runtime.state = response.data?.state || 'missing';
+  runtime.root = response.data?.runtime_root || runtime.root;
 };
 
 watch(() => props.visible, async (visible) => {
   if (visible) {
     previousFocus.value = document.activeElement;
     reset();
+    await refreshRuntimeStatus();
     await nextTick();
     closeButton.value?.focus();
   }
@@ -117,6 +147,7 @@ const pollJob = async () => {
   updateJob(response.data || {});
   if (job.status === 'completed') {
     emit('installed', job.result);
+    await refreshRuntimeStatus();
     return;
   }
   if (job.status === 'failed' || job.status === 'cancelled') {
@@ -124,6 +155,95 @@ const pollJob = async () => {
     return;
   }
   pollTimer = window.setTimeout(pollJob, 250);
+};
+
+const chooseRuntime = async (sourceType) => {
+  error.value = '';
+  const response = await props.bridge.chooseRuntimeSource(sourceType);
+  if (response?.code !== 0) {
+    error.value = response?.msg || '无法选择 GPU 运行时';
+    return;
+  }
+  const selected = response?.data?.path || '';
+  if (selected) {
+    runtime.sourceType = sourceType;
+    runtime.sourcePath = selected;
+  }
+};
+
+const chooseRuntimeRoot = async () => {
+  const response = await props.bridge.chooseRuntimeSource('data_root');
+  if (response?.code !== 0 || !response?.data?.path) return;
+  const configured = await props.bridge.configureRuntimeRoot(response.data.path);
+  if (configured?.code !== 0) {
+    error.value = configured?.msg || '无法设置 GPU 运行时数据目录';
+    return;
+  }
+  runtime.root = configured.data?.runtime_root || response.data.path;
+  runtime.state = configured.data?.state || 'missing';
+};
+
+const pollRuntimeJob = async () => {
+  if (!runtime.id) return;
+  const response = await props.bridge.getRuntimeJob(runtime.id);
+  if (response?.code !== 0) {
+    runtime.status = 'failed';
+    error.value = response?.msg || '读取 GPU 运行时安装进度失败';
+    return;
+  }
+  const next = response.data || {};
+  runtime.status = next.status || runtime.status;
+  runtime.phase = next.phase || '';
+  runtime.progress = Number(next.progress) || 0;
+  runtime.message = next.message || '';
+  if (runtime.status === 'completed') {
+    runtime.state = 'ready';
+    await refreshRuntimeStatus();
+    return;
+  }
+  if (runtime.status === 'failed') {
+    error.value = next.error?.message || runtime.message || 'GPU 运行时安装失败';
+    return;
+  }
+  runtimePollTimer = window.setTimeout(pollRuntimeJob, 300);
+};
+
+const installRuntime = async () => {
+  error.value = '';
+  if (!runtime.sourcePath) {
+    error.value = '请选择 GPU 运行时 ZIP 或目录';
+    return;
+  }
+  runtime.status = 'queued';
+  runtime.message = '正在创建 GPU 运行时安装任务';
+  const response = await props.bridge.startRuntimeInstall({
+    source_type: runtime.sourceType,
+    path: runtime.sourcePath,
+  });
+  if (response?.code !== 0) {
+    runtime.status = 'failed';
+    error.value = response?.msg || '无法启动 GPU 运行时安装';
+    return;
+  }
+  runtime.id = response.data?.job_id || '';
+  await pollRuntimeJob();
+};
+
+const prepareImportedVoice = async () => {
+  error.value = '';
+  runtime.status = 'preparing';
+  runtime.message = '正在启动 GPU、加载音色并生成试听';
+  const response = await props.bridge.prepareVoice(`pack:${form.voiceId}`);
+  if (response?.code !== 0) {
+    runtime.status = 'failed';
+    error.value = response?.msg || 'GPU 音色准备失败';
+    return;
+  }
+  runtime.status = 'ready';
+  runtime.state = 'ready';
+  runtime.message = '音色已通过真实 GPU 合成验证，可以用于弹幕播报';
+  runtime.metrics = response.data?.runtime?.metrics || null;
+  emit('installed', { voice_id: form.voiceId, health: 'ready' });
 };
 
 const submit = async () => {
@@ -166,6 +286,7 @@ const close = async () => {
 
 onUnmounted(() => {
   if (pollTimer) window.clearTimeout(pollTimer);
+  if (runtimePollTimer) window.clearTimeout(runtimePollTimer);
 });
 </script>
 
@@ -253,9 +374,38 @@ onUnmounted(() => {
           <div v-if="job.status !== 'idle'" class="job-panel" :class="`job-${job.status}`">
             <div class="job-head"><strong>{{ job.message }}</strong><span>{{ job.progress }}%</span></div>
             <div class="progress-track"><span :style="{ width: `${job.progress}%` }"></span></div>
-            <p v-if="job.status === 'completed'">文件已安全导入，等待安装 CPU 运行时后试听并启用。</p>
+            <p v-if="job.status === 'completed'">文件已安全导入。安装独立 GPU 运行时并完成真实试听后即可启用。</p>
           </div>
-          <div v-else class="safety-note">安装后先显示为“等待运行时”，不会误把尚未验证的音色放进播报下拉框。</div>
+          <div v-else class="safety-note">音色包与 GPU 运行时分开存放；主程序关闭或停用个性化语音后会释放显存。</div>
+
+          <section class="runtime-panel" data-test="runtime-panel">
+            <div class="runtime-title">
+              <div><strong>独立 GPU 运行时</strong><span>CUDA 12.6 · FP16 · RTX 3060</span></div>
+              <span class="runtime-state" :class="`runtime-${runtime.state}`">{{ runtime.state === 'ready' ? '已安装' : '待安装' }}</span>
+            </div>
+            <p>运行时单独放在数据盘，不打进桌面 EXE；只有使用个性化音色时才占用显存。</p>
+            <div class="runtime-root-row">
+              <span>数据目录：{{ runtime.root || '应用数据目录 / runtimes' }}</span>
+              <button type="button" @click="chooseRuntimeRoot">更换数据盘</button>
+            </div>
+            <div class="file-row">
+              <input v-model.trim="runtime.sourcePath" data-test="runtime-path" type="text" placeholder="选择 GPU 运行时 .zip 或解压目录">
+              <button data-test="pick-runtime-zip" type="button" @click="chooseRuntime('zip')">ZIP</button>
+              <button data-test="pick-runtime-directory" type="button" @click="chooseRuntime('directory')">目录</button>
+            </div>
+            <div v-if="runtime.status !== 'idle'" class="runtime-progress">
+              <div><strong>{{ runtime.message }}</strong><span v-if="runtime.progress">{{ runtime.progress }}%</span></div>
+              <div v-if="runtime.progress" class="progress-track"><span :style="{ width: `${runtime.progress}%` }"></span></div>
+            </div>
+            <div v-if="runtime.metrics" class="metric-row">
+              <span>峰值显存 {{ runtime.metrics.peak_vram_mb || 0 }} MB</span>
+              <span>首包 {{ runtime.metrics.first_pcm_ms || 0 }} ms</span>
+            </div>
+            <div class="runtime-actions">
+              <button data-test="runtime-install" class="secondary" type="button" :disabled="runtime.status === 'queued' || runtime.status === 'running'" @click="installRuntime">安装运行时</button>
+              <button data-test="prepare-voice" class="primary" type="button" :disabled="!form.voiceId || runtime.status === 'preparing'" @click="prepareImportedVoice">GPU 试听并启用</button>
+            </div>
+          </section>
         </div>
 
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>
@@ -304,6 +454,12 @@ input:focus, textarea:focus, select:focus { border-color: #00aeec; box-shadow: 0
 .summary-grid { display: grid; grid-template-columns: 90px 1fr; gap: 10px 14px; padding: 15px; border: 1px solid #e1eaf1; border-radius: 12px; background: #fff; font-size: 12px; }
 .summary-grid span { color: #64748b; }.summary-grid strong { color: #1e293b; }.summary-text { font-weight: 500; }
 .safety-note, .job-panel { padding: 13px; border-radius: 10px; background: #edf8fc; color: #336579; font-size: 12px; line-height: 1.5; }
+.runtime-panel { display: flex; flex-direction: column; gap: 9px; margin-top: 4px; padding: 14px; border: 1px solid #d9e8f1; border-radius: 12px; background: #fff; }
+.runtime-title, .runtime-title > div, .runtime-root-row, .runtime-actions, .metric-row, .runtime-progress > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.runtime-title > div { align-items: flex-start; flex-direction: column; gap: 2px; }.runtime-title span, .runtime-panel p, .runtime-root-row { color: #64748b; font-size: 11px; }.runtime-panel p { margin: 0; line-height: 1.45; }
+.runtime-state { padding: 4px 8px; border-radius: 99px; background: #fff7ed; color: #c2410c !important; font-weight: 700; }.runtime-state.runtime-ready { background: #ecfdf5; color: #047857 !important; }
+.runtime-root-row { padding: 7px 9px; border-radius: 8px; background: #f8fafc; }.runtime-root-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.runtime-root-row button { flex-shrink: 0; border: 0; background: transparent; color: #008fc4; cursor: pointer; }
+.runtime-actions { justify-content: flex-end; }.runtime-progress, .metric-row { padding: 9px; border-radius: 8px; background: #f0f9ff; color: #075985; font-size: 11px; }.metric-row { justify-content: flex-start; gap: 18px; }
 .job-head { display: flex; justify-content: space-between; gap: 12px; }.job-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .progress-track { height: 7px; margin-top: 9px; overflow: hidden; border-radius: 99px; background: #d8e7ed; }.progress-track span { display: block; height: 100%; border-radius: inherit; background: #00aeec; transition: width .2s ease; }
 .job-panel p { margin: 9px 0 0; }.job-completed { background: #ecfdf5; color: #047857; }

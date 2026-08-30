@@ -199,6 +199,7 @@ describe('createSpeechService', () => {
     desktop.enqueue('桌面语音测试');
     expect(backend.speak).toHaveBeenCalledWith('桌面语音测试', {
       voiceURI: 'cmn',
+      voiceKey: 'system:cmn',
       rate: 1,
       volume: 1,
     });
@@ -207,6 +208,54 @@ describe('createSpeechService', () => {
     await vi.waitFor(() => {
       expect(desktop.getState().status).toBe('ready');
     });
+  });
+
+  it('waits for GPU preparation before enabling a personalized voice and passes its complete key', async () => {
+    let finishSpeech;
+    const backend = {
+      getCapabilities: vi.fn().mockResolvedValue({ code: 0, data: { supported: true, voices: [] } }),
+      listVoicePacks: vi.fn().mockResolvedValue({ code: 0, data: [{
+        voice_key: 'pack:haibara-jp', display_name: '灰原哀（日语）', health: 'ready', selectable: true,
+      }] }),
+      prepare: vi.fn().mockResolvedValue({ code: 0, data: { health: 'ready' } }),
+      speak: vi.fn(() => new Promise(resolve => { finishSpeech = resolve; })),
+      stop: vi.fn().mockResolvedValue({ code: 0 }),
+      release: vi.fn().mockResolvedValue({ code: 0 }),
+    };
+    const desktop = createSpeechService({ synth: null, Utterance: null, backend, storage });
+    await desktop.initialize();
+    desktop.setVoice('pack:haibara-jp');
+
+    const enabling = desktop.setEnabled(true);
+    expect(desktop.getState()).toMatchObject({ enabled: false, status: 'loading_gpu' });
+    await enabling;
+    expect(backend.prepare).toHaveBeenCalledWith('pack:haibara-jp');
+    expect(desktop.getState()).toMatchObject({ enabled: true, status: 'ready' });
+
+    desktop.enqueue('こんにちは');
+    expect(backend.speak).toHaveBeenCalledWith('こんにちは', {
+      voiceURI: '', voiceKey: 'pack:haibara-jp', rate: 1, volume: 1,
+    });
+    finishSpeech({ code: 0 });
+    await vi.waitFor(() => expect(desktop.getState().status).toBe('ready'));
+    await desktop.setEnabled(false);
+    expect(backend.release).toHaveBeenCalled();
+  });
+
+  it('keeps personalized speech disabled when GPU preparation fails', async () => {
+    const backend = {
+      getCapabilities: vi.fn().mockResolvedValue({ code: 0, data: { supported: true, voices: [] } }),
+      listVoicePacks: vi.fn().mockResolvedValue({ code: 0, data: [{
+        voice_key: 'pack:test', display_name: '测试', health: 'ready', selectable: true,
+      }] }),
+      prepare: vi.fn().mockResolvedValue({ code: -1, msg: 'CUDA 显存不足' }),
+    };
+    const desktop = createSpeechService({ synth: null, Utterance: null, backend, storage });
+    await desktop.initialize();
+    desktop.setVoice('pack:test');
+
+    expect(await desktop.setEnabled(true)).toBe(false);
+    expect(desktop.getState()).toMatchObject({ enabled: false, status: 'gpu_error', error: 'CUDA 显存不足' });
   });
 
   it('waits for desktop stop confirmation before speaking the item after skip', async () => {

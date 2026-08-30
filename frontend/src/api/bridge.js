@@ -203,8 +203,8 @@ export const useBridge = () => {
     async getSpeechCapabilities() {
       return await callPy('get_speech_capabilities');
     },
-    async speakText(text, voiceURI, rate, volume) {
-      return await callPy('speak_text', text, voiceURI, rate, volume);
+    async speakText(text, voiceURI, rate, volume, voiceKey = '') {
+      return await callPy('speak_text', text, voiceURI, rate, volume, voiceKey);
     },
     async stopSpeech() {
       return await callPy('stop_speech');
@@ -225,6 +225,32 @@ export const useBridge = () => {
     },
     async listVoicePacks() {
       return await callPy('list_voice_packs');
+    },
+
+    // 独立 GPU 运行时与个性化音色准备
+    async chooseRuntimeSource(kind) {
+      return await callPy('choose_runtime_source', kind);
+    },
+    async configureRuntimeRoot(path) {
+      return await callPy('configure_runtime_root', path);
+    },
+    async startRuntimeInstall(request) {
+      return await callPy('start_runtime_install', request);
+    },
+    async getRuntimeJob(jobId) {
+      return await callPy('get_runtime_job', jobId);
+    },
+    async getGpuRuntimeStatus() {
+      return await callPy('get_gpu_runtime_status');
+    },
+    async prepareVoice(voiceKey) {
+      return await callPy('prepare_voice', voiceKey);
+    },
+    async previewVoice(voiceKey, text = '') {
+      return await callPy('preview_voice', voiceKey, text);
+    },
+    async releasePersonalizedVoice() {
+      return await callPy('release_personalized_voice');
     },
 
     // App 配置
