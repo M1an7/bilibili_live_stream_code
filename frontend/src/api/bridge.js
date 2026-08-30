@@ -210,6 +210,23 @@ export const useBridge = () => {
       return await callPy('stop_speech');
     },
 
+    // 个性化音色包
+    async chooseVoiceSource(kind) {
+      return await callPy('choose_voice_source', kind);
+    },
+    async startVoicePackBuild(request) {
+      return await callPy('start_voice_pack_build', request);
+    },
+    async getVoiceJob(jobId) {
+      return await callPy('get_voice_job', jobId);
+    },
+    async cancelVoiceJob(jobId) {
+      return await callPy('cancel_voice_job', jobId);
+    },
+    async listVoicePacks() {
+      return await callPy('list_voice_packs');
+    },
+
     // App 配置
     async getAppConfig() {
       const res = await callPy('get_app_config');

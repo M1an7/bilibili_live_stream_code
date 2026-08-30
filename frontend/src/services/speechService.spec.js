@@ -96,7 +96,39 @@ describe('createSpeechService', () => {
     service.setVolume(0.6);
 
     const writes = storage.setItem.mock.calls.map(([, value]) => JSON.parse(value));
-    expect(writes.at(-1)).toEqual({ voiceURI: 'default', rate: 1.2, volume: 0.6 });
+    expect(writes.at(-1)).toEqual({ selectedVoiceKey: 'system:default', rate: 1.2, volume: 0.6 });
+  });
+
+  it('migrates an old system voice URI into a system voice key', async () => {
+    storage.setItem('bili-live-speech-settings-v1', JSON.stringify({ voiceURI: 'Haruka' }));
+    synth.voices = [{ name: 'Haruka', voiceURI: 'Haruka', lang: 'ja-JP', default: true }];
+    service = createSpeechService({ synth, Utterance: FakeUtterance, storage });
+
+    await service.initialize();
+
+    expect(service.getState()).toMatchObject({
+      selectedVoiceKey: 'system:Haruka',
+      selectedVoiceURI: 'Haruka',
+    });
+  });
+
+  it('keeps runtime-required packs visible for management but out of selectable voices', async () => {
+    const backend = {
+      listVoicePacks: vi.fn().mockResolvedValue({ code: 0, data: [
+        {
+          voice_key: 'pack:test',
+          display_name: '测试音色',
+          health: 'runtime_required',
+          selectable: false,
+        },
+      ] }),
+    };
+    service = createSpeechService({ synth, Utterance: FakeUtterance, storage, backend });
+
+    await service.initialize();
+
+    expect(service.getState().voicePacks).toHaveLength(1);
+    expect(service.getState().voices.some(voice => voice.voiceKey === 'pack:test')).toBe(false);
   });
 
   it('skip cancels current speech and starts the next item', () => {

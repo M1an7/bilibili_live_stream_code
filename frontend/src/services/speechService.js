@@ -1,5 +1,5 @@
 const SETTINGS_KEY = 'bili-live-speech-settings-v1';
-const DEFAULT_SETTINGS = { voiceURI: '', rate: 1, volume: 1 };
+const DEFAULT_SETTINGS = { selectedVoiceKey: '', rate: 1, volume: 1 };
 const OVERLOAD_WAIT_MS = 2_000;
 const STALE_AFTER_MS = 3_000;
 
@@ -14,8 +14,11 @@ const loadSettings = (storage) => {
 
   try {
     const saved = JSON.parse(storage.getItem(SETTINGS_KEY) || '{}');
+    const selectedVoiceKey = typeof saved.selectedVoiceKey === 'string'
+      ? saved.selectedVoiceKey
+      : (typeof saved.voiceURI === 'string' && saved.voiceURI ? `system:${saved.voiceURI}` : '');
     return {
-      voiceURI: typeof saved.voiceURI === 'string' ? saved.voiceURI : '',
+      selectedVoiceKey,
       rate: clamp(Number(saved.rate) || DEFAULT_SETTINGS.rate, 0.5, 2),
       volume: clamp(Number.isFinite(Number(saved.volume)) ? Number(saved.volume) : DEFAULT_SETTINGS.volume, 0, 1),
     };
@@ -52,7 +55,10 @@ export const createSpeechService = ({
     enabled: false,
     status: browserAvailable ? 'idle' : 'unsupported',
     voices: [],
-    selectedVoiceURI: saved.voiceURI,
+    systemVoices: [],
+    voicePacks: [],
+    selectedVoiceKey: saved.selectedVoiceKey,
+    selectedVoiceURI: saved.selectedVoiceKey.startsWith('system:') ? saved.selectedVoiceKey.slice(7) : '',
     rate: saved.rate,
     volume: saved.volume,
     queueLength: 0,
@@ -64,6 +70,8 @@ export const createSpeechService = ({
   const snapshot = () => ({
     ...state,
     voices: state.voices.map(voice => ({ ...voice })),
+    systemVoices: state.systemVoices.map(voice => ({ ...voice })),
+    voicePacks: state.voicePacks.map(voice => ({ ...voice })),
   });
 
   const notify = () => {
@@ -75,7 +83,7 @@ export const createSpeechService = ({
     if (!storage) return;
     try {
       storage.setItem(SETTINGS_KEY, JSON.stringify({
-        voiceURI: state.selectedVoiceURI,
+        selectedVoiceKey: state.selectedVoiceKey,
         rate: state.rate,
         volume: state.volume,
       }));
@@ -84,42 +92,83 @@ export const createSpeechService = ({
     }
   };
 
+  const rebuildSelectableVoices = () => {
+    const readyPacks = state.voicePacks
+      .filter(pack => pack.selectable && pack.health === 'ready')
+      .map(pack => ({
+        name: pack.display_name,
+        voiceURI: '',
+        voiceKey: pack.voice_key,
+        lang: (pack.supported_output_languages || []).join(', '),
+        default: false,
+        kind: 'pack',
+      }));
+    state.voices = [...state.systemVoices, ...readyPacks];
+  };
+
   const refreshVoices = () => {
     if (activeEngine !== 'browser') return state.voices;
     const discovered = synth.getVoices() || [];
     voiceObjects.clear();
-    state.voices = discovered.map((voice) => {
+    state.systemVoices = discovered.map((voice) => {
       voiceObjects.set(voice.voiceURI, voice);
       return {
         name: voice.name,
         voiceURI: voice.voiceURI,
+        voiceKey: `system:${voice.voiceURI}`,
         lang: voice.lang,
         default: Boolean(voice.default),
+        kind: 'system',
       };
     });
+    rebuildSelectableVoices();
 
-    if (!voiceObjects.has(state.selectedVoiceURI)) {
+    if (!state.voices.some(voice => voice.voiceKey === state.selectedVoiceKey)) {
       const preferred = discovered.find(voice => voice.default)
         || discovered.find(voice => String(voice.lang).toLowerCase().startsWith('zh'))
         || discovered[0];
+      state.selectedVoiceKey = preferred ? `system:${preferred.voiceURI}` : '';
       state.selectedVoiceURI = preferred?.voiceURI || '';
     }
     notify();
     return state.voices;
   };
 
+  const refreshVoicePacks = async () => {
+    if (!backend || typeof backend.listVoicePacks !== 'function') return state.voicePacks;
+    try {
+      const result = await backend.listVoicePacks();
+      state.voicePacks = result?.code === 0 && Array.isArray(result.data)
+        ? result.data.map(pack => ({ ...pack }))
+        : [];
+    } catch {
+      state.voicePacks = [];
+    }
+    rebuildSelectableVoices();
+    notify();
+    return state.voicePacks;
+  };
+
   const selectPreferredVoice = () => {
-    const available = new Set(state.voices.map(voice => voice.voiceURI));
-    if (available.has(state.selectedVoiceURI)) return;
-    const preferred = state.voices.find(voice => voice.default)
-      || state.voices.find(voice => String(voice.lang).toLowerCase().startsWith('zh'))
+    const available = new Set(state.voices.map(voice => voice.voiceKey));
+    if (available.has(state.selectedVoiceKey)) {
+      state.selectedVoiceURI = state.selectedVoiceKey.startsWith('system:')
+        ? state.selectedVoiceKey.slice(7)
+        : '';
+      return;
+    }
+    const preferred = state.systemVoices.find(voice => voice.default)
+      || state.systemVoices.find(voice => String(voice.lang).toLowerCase().startsWith('zh'))
+      || state.systemVoices[0]
       || state.voices[0];
+    state.selectedVoiceKey = preferred?.voiceKey || '';
     state.selectedVoiceURI = preferred?.voiceURI || '';
   };
 
   const initialize = async () => {
     if (browserAvailable) {
       refreshVoices();
+      await refreshVoicePacks();
       return snapshot();
     }
     if (!backend || typeof backend.getCapabilities !== 'function') {
@@ -140,11 +189,17 @@ export const createSpeechService = ({
       activeEngine = 'backend';
       state.supported = true;
       state.status = state.enabled ? 'ready' : 'idle';
-      state.voices = Array.isArray(capabilities.voices)
-        ? capabilities.voices.map(voice => ({ ...voice }))
+      state.systemVoices = Array.isArray(capabilities.voices)
+        ? capabilities.voices.map(voice => ({
+          ...voice,
+          voiceKey: `system:${voice.voiceURI}`,
+          kind: 'system',
+        }))
         : [];
+      rebuildSelectableVoices();
       state.error = capabilities.error || '';
       selectPreferredVoice();
+      await refreshVoicePacks();
       notify();
     } catch (error) {
       state.supported = false;
@@ -300,8 +355,12 @@ export const createSpeechService = ({
     return true;
   };
 
-  const setVoice = (voiceURI) => {
-    state.selectedVoiceURI = typeof voiceURI === 'string' ? voiceURI : '';
+  const setVoice = (voiceKey) => {
+    const normalized = typeof voiceKey === 'string' ? voiceKey : '';
+    state.selectedVoiceKey = normalized && !normalized.includes(':') ? `system:${normalized}` : normalized;
+    state.selectedVoiceURI = state.selectedVoiceKey.startsWith('system:')
+      ? state.selectedVoiceKey.slice(7)
+      : '';
     persist();
     notify();
   };
@@ -341,6 +400,7 @@ export const createSpeechService = ({
       return () => listeners.delete(listener);
     },
     refreshVoices,
+    refreshVoicePacks,
     setEnabled,
     setVoice,
     setRate,
@@ -376,6 +436,10 @@ const desktopBackend = typeof window !== 'undefined' ? {
   async stop() {
     const bridge = await getDesktopBridge();
     return bridge.stopSpeech();
+  },
+  async listVoicePacks() {
+    const bridge = await getDesktopBridge();
+    return bridge.listVoicePacks();
   },
 } : null;
 
