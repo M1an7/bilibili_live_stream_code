@@ -15,6 +15,7 @@ class VoiceStoragePaths:
     speech_cache: Path
     staging: Path
     logs: Path
+    voice_state: Path
 
     @classmethod
     def resolve(
@@ -39,16 +40,19 @@ class VoiceStoragePaths:
             xdg_data_home = env.get("XDG_DATA_HOME", "").strip()
             root = (Path(xdg_data_home) if xdg_data_home else home_path / ".local" / "share") / "BiliLiveTool"
 
+        runtime_override = env.get("BILILIVE_RUNTIME_HOME", "").strip()
+        runtime_root = Path(runtime_override) if runtime_override else root / "runtimes"
         return cls(
             root=root,
             voices=root / "voices",
-            runtimes=root / "runtimes",
+            runtimes=runtime_root,
             speech_cache=root / "cache" / "speech",
             staging=root / "staging",
             logs=root / "logs",
+            voice_state=root / "voice-state",
         )
 
     def ensure(self) -> "VoiceStoragePaths":
-        for path in (self.voices, self.runtimes, self.speech_cache, self.staging, self.logs):
+        for path in (self.voices, self.runtimes, self.speech_cache, self.staging, self.logs, self.voice_state):
             path.mkdir(parents=True, exist_ok=True)
         return self

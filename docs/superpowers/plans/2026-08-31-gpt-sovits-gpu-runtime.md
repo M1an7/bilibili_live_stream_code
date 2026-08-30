@@ -30,13 +30,13 @@
 - `RuntimeRegistry.find_compatible(model_version)` / `status()`
 - `RuntimeInstaller.install_zip(path, progress=None)` / `install_directory(path, progress=None)`
 
-- [ ] Write failing tests for platform, engine API, relative paths, Ed25519 signatures, hashes, ZIP traversal, unsigned production rejection, development override, disk-space errors, and atomic rollback.
-- [ ] Run `python3 -m unittest tests.test_gpu_runtime_contract -v` and record RED.
-- [ ] Implement strict runtime manifests and embedded public-key verification. Tests generate ephemeral signing keys; no private release key enters Git.
-- [ ] Extend storage with `voice_state` and configurable runtime root while preserving existing defaults.
-- [ ] Implement staging, safe ZIP extraction, directory import, progress, and atomic replacement.
-- [ ] Run focused and full backend tests.
-- [ ] Commit: `feat: add signed gpu runtime installation`
+- [x] Write failing tests for platform, engine API, relative paths, Ed25519 signatures, hashes, ZIP traversal, unsigned production rejection, development override, disk-space errors, and atomic rollback.
+- [x] Run `python3 -m unittest tests.test_gpu_runtime_contract -v` and record RED.
+- [x] Implement strict runtime manifests and embedded public-key verification. Tests generate ephemeral signing keys; no private release key enters Git.
+- [x] Extend storage with `voice_state` and configurable runtime root while preserving existing defaults.
+- [x] Implement staging, safe ZIP extraction, directory import, progress, and atomic replacement.
+- [x] Run focused and full backend tests.
+- [x] Commit: `feat: add signed gpu runtime installation`
 
 ## Task 2: Token-Authenticated Sidecar Client and GPU Runtime State Machine
 
