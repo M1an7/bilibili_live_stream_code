@@ -35,7 +35,7 @@
 - macOS：使用内置 `say`；
 - Linux：使用 `espeak-ng` 或 `espeak`，未安装时界面会给出提示。
 
-系统语音播报仅占用少量 CPU 和内存，不使用 GPU 或云服务器。后续个性化音色可以继续接入同一语音服务和队列接口。
+系统语音播报仅占用少量 CPU 和内存，不使用 GPU 或云服务器。选择个性化音色时，程序会按需启动独立的 GPT-SoVITS GPU 运行时；停用个性化音色或退出程序后，侧车进程结束并释放显存。
 
 ### 导入 GPT-SoVITS 个性化音色
 
@@ -54,7 +54,29 @@ Windows 中导入后的标准音色包保存在：
 %LOCALAPPDATA%\BiliLiveTool\voices\<voice-id>\
 ```
 
-从源码开发时可用环境变量 `BILILIVE_DATA_HOME` 指定测试数据目录。导入完成后暂时显示为 `等待 CPU 运行时`（`runtime_required`），不会出现在可播报音色列表，也不会静默改用错误音色。当前里程碑完成的是安全导入、管理目录和运行时接口边界；GPT-SoVITS 用户权重本身不包含完整推理程序和基础预训练模型，因此还不能仅凭 `.ckpt/.pth` 在桌面端合成。
+从源码开发时可用环境变量 `BILILIVE_DATA_HOME` 指定测试数据目录，也可以用 `BILILIVE_RUNTIME_HOME` 单独指定 GPU 运行时所在的数据盘。导入完成后先显示为 `等待 GPU 运行时`（`runtime_required`），不会出现在可播报音色列表，也不会静默改用错误音色。安装运行时后点击 `GPU 试听并启用`；只有通过真实 CUDA FP16 合成、非静音 PCM 校验与试听后，音色才会进入播报下拉框。
+
+### GPT-SoVITS GPU 运行时
+
+GPU 运行时和桌面 EXE 分开发行，支持 NVIDIA CUDA 12.6、GPT-SoVITS `v2Pro` / `v2ProPlus` 与日语合成。应用使用随机令牌访问仅绑定 `127.0.0.1` 的侧车服务；模型路径只能位于应用的音色数据目录内。
+
+在 Windows PowerShell 中把运行时构建到空间充足的数据盘：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_gpu_runtime.ps1 `
+  -BuildRoot "D:\BiliLiveRuntimeBuild" `
+  -PrivateKeyPath "D:\keys\runtime-ed25519-private.pem"
+```
+
+脚本固定官方 GPT-SoVITS 提交，创建 Python 3.10 + PyTorch CU126 环境，下载基础预训练模型、Open JTalk 字典与 FFmpeg，并输出独立的：
+
+```text
+D:\BiliLiveRuntimeBuild\artifacts\BiliLiveTool-GPT-SoVITS-CU126-<version>.zip
+```
+
+发布包必须使用 Ed25519 私钥签名，私钥不得提交到 Git。仅本机开发验证时可用 `-AllowUnsignedDevelopment`，同时以环境变量 `BILILIVE_ALLOW_UNSIGNED_RUNTIME=1` 启动源码版应用。桌面界面第 4 步可以选择运行时 ZIP、已解压目录以及运行时数据盘位置。
+
+运行时安装后，个性化语音的工作顺序为：启动侧车 → 加载音色 → 生成日语试听 → 校验并保存试听 → 开始按弹幕队列播报。CUDA 或显存错误会直接显示，不会回退到其他音色。
 
 ### 环境要求
 

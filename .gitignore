@@ -28,6 +28,7 @@ BiliLiveGUI.lock
 .idea/
 .vscode/
 .worktrees/
+.runtime-dev/
 
 # --- OS generated files ---
 .DS_Store

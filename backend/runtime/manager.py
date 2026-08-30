@@ -24,7 +24,7 @@ def _free_loopback_port() -> int:
 
 
 def _default_command(record: RuntimeRecord, host: str, port: int, token: str, allowed_root: Path) -> list[str]:
-    python = record.path / "bin" / "python.exe"
+    python = record.path / "python" / "Scripts" / "python.exe"
     entrypoint = record.path / record.manifest.entrypoint
     return [
         str(python),

@@ -153,14 +153,14 @@
 - Modify: `.gitignore`
 - Modify: `README.md`
 
-- [ ] Write failing packaging tests for separate ZIP output, pinned source, Python 3.10, CUDA 12.6 PyTorch, required base models, Open JTalk, FFmpeg, manifest hashes/signature, and exclusion from the main EXE.
-- [ ] Implement a resumable Windows builder under a user-selected data/build directory with disk checks after each phase.
-- [ ] Clone only the pinned upstream commit and verify it before dependency/model installation.
-- [ ] Build the runtime manifest, sign when a release key is supplied, and support an explicit unsigned development artifact.
-- [ ] Ensure the main EXE packaging excludes `.runtime-dev`, CUDA DLLs, PyTorch, weights, and protected voice files.
-- [ ] Document runtime installation and GPU modes.
-- [ ] Run packaging tests.
-- [ ] Commit: `build: add separate gpt-sovits gpu runtime package`
+- [x] Write failing packaging tests for separate ZIP output, pinned source, Python 3.10, CUDA 12.6 PyTorch, required base models, Open JTalk, FFmpeg, manifest hashes/signature, and exclusion from the main EXE.
+- [x] Implement a resumable Windows builder under a user-selected data/build directory with disk checks after each phase.
+- [x] Clone only the pinned upstream commit and verify it before dependency/model installation.
+- [x] Build the runtime manifest, sign when a release key is supplied, and support an explicit unsigned development artifact.
+- [x] Ensure the main EXE packaging excludes `.runtime-dev`, CUDA DLLs, PyTorch, weights, and protected voice files.
+- [x] Document runtime installation and GPU modes.
+- [x] Run packaging tests and parse both PowerShell scripts successfully.
+- [x] Commit: `build: add separate gpt-sovits gpu runtime package`
 
 ## Task 8: Real RTX 3060 Acceptance, Final Verification, and Integration
 

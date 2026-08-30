@@ -7,3 +7,4 @@ PyYAML==6.0.2
 transformers==4.56.1
 pytorch-lightning==2.5.3
 pyopenjtalk==0.4.1
+cryptography==45.0.6
