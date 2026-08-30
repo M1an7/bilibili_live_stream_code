@@ -13,3 +13,4 @@ cffi>=1.15.0
 brotli>=1.0.9
 pystray
 cryptography>=41,<46
+sounddevice>=0.5,<1

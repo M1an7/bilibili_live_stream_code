@@ -12,6 +12,7 @@ from .builder import BuiltVoicePack
 from .manifest import VOICE_ID_PATTERN, VoiceContractError, VoiceManifest
 from .storage import VoiceStoragePaths
 from .validator import VoicePackValidator, is_link_or_reparse
+from .health import VoiceHealthStore
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class VoicePackRegistry:
     def __init__(self, paths: VoiceStoragePaths, validator: VoicePackValidator):
         self.paths = paths.ensure()
         self.validator = validator
+        self.health_store = VoiceHealthStore(paths)
         self._lock = threading.RLock()
         self._records: dict[str, VoicePackRecord] = {}
         self.refresh()
@@ -58,11 +60,12 @@ class VoicePackRegistry:
             manifest = validation.manifest
             if not manifest or manifest.voice_id != voice_id:
                 raise VoiceContractError("voice_id_mismatch", "目录名与音色 ID 不一致")
+            health = self.health_store.get(manifest)
             return VoicePackRecord(
                 voice_id=voice_id,
                 display_name=manifest.display_name,
-                health=validation.health,
-                message=validation.message,
+                health=health["health"],
+                message=health["message"],
                 manifest=manifest,
             )
         except (VoiceContractError, OSError, json.JSONDecodeError) as exc:

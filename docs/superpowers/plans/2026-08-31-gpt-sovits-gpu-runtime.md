@@ -73,13 +73,13 @@
 - `VoiceHealthStore.get()` / `promote_ready()` / `invalidate()`
 - `PersonalizedSpeechService.prepare(voice_key)` / `speak()` / `stop()` / `shutdown()`
 
-- [ ] Write failing tests for first-chunk playback, PCM validation, volume, cancellation token, late chunks, silence rejection, preview write, manifest hash update, readiness invalidation, and no silent fallback.
-- [ ] Run focused tests and record RED.
-- [ ] Implement lazy `sounddevice` loading and injectable output streams so unit tests need no audio device.
-- [ ] Implement health records bound to voice/runtime digests and real preview promotion.
-- [ ] Implement personalized prepare/speak/stop lifecycle over `GpuRuntimeManager`.
-- [ ] Run focused and full tests.
-- [ ] Commit: `feat: play gpu synthesized personalized speech`
+- [x] Write failing tests for first-chunk playback, PCM validation, volume, cancellation token, late chunks, silence rejection, preview write, manifest hash update, readiness invalidation, and no silent fallback.
+- [x] Run focused tests and record RED.
+- [x] Implement lazy `sounddevice` loading and injectable output streams so unit tests need no audio device.
+- [x] Implement health records bound to voice/runtime digests and real preview promotion.
+- [x] Implement personalized prepare/speak/stop lifecycle over `GpuRuntimeManager`.
+- [x] Run focused and full tests.
+- [x] Commit: `feat: play gpu synthesized personalized speech`
 
 ## Task 4: Desktop API Routing and Cleanup
 
