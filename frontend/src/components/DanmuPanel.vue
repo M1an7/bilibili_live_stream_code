@@ -4,14 +4,17 @@ import { useBridge } from '@/api/bridge';
 import { routeDanmuToSpeech } from '@/services/danmuSpeechRouter';
 import { speechService } from '@/services/speechService';
 import SpeechToolbar from '@/components/SpeechToolbar.vue';
+import VoiceImportModal from '@/components/VoiceImportModal.vue';
 
-const { startDanmuMonitor, sendDanmu } = useBridge();
+const bridge = useBridge();
+const { startDanmuMonitor, sendDanmu } = bridge;
 const messages = ref([]);
 const messageListRef = ref(null);
 const isAutoScroll = ref(true);
 const inputMsg = ref('');
 const sending = ref(false);
 const isDev = import.meta.env.DEV;
+const voiceImportVisible = ref(false);
 
 const addMessage = (data) => {
   messages.value.push(data);
@@ -88,6 +91,10 @@ const simulateDanmu = () => {
   });
 };
 
+const handleVoiceInstalled = async () => {
+  await speechService.refreshVoicePacks?.();
+};
+
 // 使用 onActivated/onDeactivated 替代 onMounted/onUnmounted
 // 因为父组件使用了 KeepAlive，onMounted 只会在第一次进入时触发
 // onActivated 会在每次切换到弹幕 Tab 时触发，确保弹幕能重新连接
@@ -114,6 +121,14 @@ onActivated(() => {
       :service="speechService"
       :dev-mode="isDev"
       @simulate="simulateDanmu"
+      @import-voice="voiceImportVisible = true"
+    />
+
+    <VoiceImportModal
+      :visible="voiceImportVisible"
+      :bridge="bridge"
+      @close="voiceImportVisible = false"
+      @installed="handleVoiceInstalled"
     />
 
     <div class="message-list" ref="messageListRef" @scroll="handleScroll">

@@ -8,7 +8,10 @@ const mocks = vi.hoisted(() => {
     supported: true,
     enabled: true,
     status: 'ready',
-    voices: [{ name: '系统默认', voiceURI: 'default', lang: 'zh-CN', default: true }],
+    voices: [{ name: '系统默认', voiceURI: 'default', voiceKey: 'system:default', kind: 'system', lang: 'zh-CN', default: true }],
+    systemVoices: [{ name: '系统默认', voiceURI: 'default', voiceKey: 'system:default', kind: 'system', lang: 'zh-CN', default: true }],
+    voicePacks: [],
+    selectedVoiceKey: 'system:default',
     selectedVoiceURI: 'default',
     rate: 1,
     volume: 1,
@@ -25,6 +28,7 @@ const mocks = vi.hoisted(() => {
         return () => {};
       }),
       refreshVoices: vi.fn(),
+      refreshVoicePacks: vi.fn(),
       setEnabled: vi.fn(),
       setVoice: vi.fn(),
       setRate: vi.fn(),
@@ -39,6 +43,10 @@ vi.mock('@/api/bridge', () => ({
   useBridge: () => ({
     startDanmuMonitor: mocks.startDanmuMonitor,
     sendDanmu: mocks.sendDanmu,
+    chooseVoiceSource: vi.fn(),
+    startVoicePackBuild: vi.fn(),
+    getVoiceJob: vi.fn(),
+    cancelVoiceJob: vi.fn(),
   }),
 }));
 
@@ -48,6 +56,7 @@ vi.mock('@/services/speechService', () => ({
 
 import DanmuPanel from './DanmuPanel.vue';
 import SpeechToolbar from './SpeechToolbar.vue';
+import VoiceImportModal from './VoiceImportModal.vue';
 
 const Host = {
   components: { DanmuPanel },
@@ -80,5 +89,16 @@ describe('DanmuPanel speech integration', () => {
       '你好主播',
       { createdAt: expect.any(Number) },
     );
+  });
+
+  it('opens the personalized voice import wizard from the toolbar', async () => {
+    const wrapper = mount(Host);
+    await nextTick();
+
+    wrapper.findComponent(SpeechToolbar).vm.$emit('import-voice');
+    await nextTick();
+
+    expect(wrapper.findComponent(VoiceImportModal).props('visible')).toBe(true);
+    expect(wrapper.text()).toContain('从 GPT-SoVITS 训练结果创建');
   });
 });

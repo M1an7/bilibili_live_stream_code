@@ -12,7 +12,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(['simulate']);
+const emit = defineEmits(['simulate', 'import-voice']);
 const state = reactive(props.service.getState());
 let unsubscribe = null;
 
@@ -22,6 +22,8 @@ const statusText = computed(() => ({
   ready: '等待弹幕',
   speaking: '正在播报',
 }[state.status] || '未知状态'));
+const systemVoices = computed(() => state.voices.filter(voice => voice.kind !== 'pack'));
+const personalizedVoices = computed(() => state.voices.filter(voice => voice.kind === 'pack'));
 
 const applyState = (next) => {
   Object.assign(state, next);
@@ -73,20 +75,33 @@ onUnmounted(() => {
       <select
         data-test="speech-voice"
         class="voice-select"
-        :value="state.selectedVoiceURI"
+        :value="state.selectedVoiceKey || (state.selectedVoiceURI ? `system:${state.selectedVoiceURI}` : '')"
         :disabled="!state.supported || state.voices.length === 0"
-        title="系统音色"
+        title="语音音色"
         @change="handleVoice"
       >
         <option v-if="state.voices.length === 0" value="">暂无系统音色</option>
-        <option
-          v-for="voice in state.voices"
-          :key="voice.voiceURI"
-          :value="voice.voiceURI"
-        >
-          {{ voice.name }}{{ voice.lang ? ` · ${voice.lang}` : '' }}
-        </option>
+        <optgroup v-if="systemVoices.length" label="系统音色">
+          <option v-for="voice in systemVoices" :key="voice.voiceKey" :value="voice.voiceKey">
+            {{ voice.name }}{{ voice.lang ? ` · ${voice.lang}` : '' }}
+          </option>
+        </optgroup>
+        <optgroup v-if="personalizedVoices.length" label="个性化音色">
+          <option v-for="voice in personalizedVoices" :key="voice.voiceKey" :value="voice.voiceKey">
+            {{ voice.name }}{{ voice.lang ? ` · ${voice.lang}` : '' }}
+          </option>
+        </optgroup>
       </select>
+
+      <button
+        data-test="import-voice"
+        class="toolbar-button import-button"
+        type="button"
+        title="导入 GPT-SoVITS 个性化音色"
+        @click="emit('import-voice')"
+      >
+        导入
+      </button>
 
       <span data-test="speech-queue" class="queue-count">
         队列 {{ state.queueLength }}
@@ -324,6 +339,11 @@ onUnmounted(() => {
 
 .toolbar-button:hover:not(:disabled) {
   border-color: #00aeec;
+  color: #008fc4;
+}
+
+.import-button {
+  border-color: rgba(0, 174, 236, 0.32);
   color: #008fc4;
 }
 

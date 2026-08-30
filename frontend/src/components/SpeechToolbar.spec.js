@@ -9,7 +9,10 @@ const makeService = (overrides = {}) => {
     supported: true,
     enabled: false,
     status: 'idle',
-    voices: [{ name: '系统默认', voiceURI: 'default', lang: 'zh-CN', default: true }],
+    voices: [{ name: '系统默认', voiceURI: 'default', voiceKey: 'system:default', kind: 'system', lang: 'zh-CN', default: true }],
+    systemVoices: [{ name: '系统默认', voiceURI: 'default', voiceKey: 'system:default', kind: 'system', lang: 'zh-CN', default: true }],
+    voicePacks: [],
+    selectedVoiceKey: 'system:default',
     selectedVoiceURI: 'default',
     rate: 1,
     volume: 1,
@@ -44,13 +47,13 @@ describe('SpeechToolbar', () => {
     const wrapper = mount(SpeechToolbar, { props: { service } });
 
     await wrapper.get('[data-test="speech-enabled"]').setValue(true);
-    await wrapper.get('[data-test="speech-voice"]').setValue('default');
+    await wrapper.get('[data-test="speech-voice"]').setValue('system:default');
     await wrapper.get('[data-test="speech-rate"]').setValue('1.2');
     await wrapper.get('[data-test="speech-volume"]').setValue('0.6');
     await wrapper.get('[data-test="speech-skip"]').trigger('click');
 
     expect(service.setEnabled).toHaveBeenCalledWith(true);
-    expect(service.setVoice).toHaveBeenCalledWith('default');
+    expect(service.setVoice).toHaveBeenCalledWith('system:default');
     expect(service.setRate).toHaveBeenCalledWith(1.2);
     expect(service.setVolume).toHaveBeenCalledWith(0.6);
     expect(service.skip).toHaveBeenCalled();
@@ -89,5 +92,13 @@ describe('SpeechToolbar', () => {
     });
     await visible.get('[data-test="simulate-danmu"]').trigger('click');
     expect(visible.emitted('simulate')).toHaveLength(1);
+  });
+
+  it('places an import button beside the voice selector', async () => {
+    const wrapper = mount(SpeechToolbar, { props: { service: makeService() } });
+
+    await wrapper.get('[data-test="import-voice"]').trigger('click');
+
+    expect(wrapper.emitted('import-voice')).toHaveLength(1);
   });
 });
