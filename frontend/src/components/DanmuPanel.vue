@@ -1,6 +1,9 @@
 <script setup>
 import { ref, onActivated, nextTick } from 'vue';
 import { useBridge } from '@/api/bridge';
+import { routeDanmuToSpeech } from '@/services/danmuSpeechRouter';
+import { speechService } from '@/services/speechService';
+import SpeechToolbar from '@/components/SpeechToolbar.vue';
 
 const { startDanmuMonitor, sendDanmu } = useBridge();
 const messages = ref([]);
@@ -8,6 +11,7 @@ const messageListRef = ref(null);
 const isAutoScroll = ref(true);
 const inputMsg = ref('');
 const sending = ref(false);
+const isDev = import.meta.env.DEV;
 
 const addMessage = (data) => {
   messages.value.push(data);
@@ -70,13 +74,25 @@ const handleSend = async () => {
   }
 };
 
+const handleIncomingMessage = (data) => {
+  addMessage(data);
+  routeDanmuToSpeech(data, speechService);
+};
+
+const simulateDanmu = () => {
+  handleIncomingMessage({
+    type: 'danmu',
+    uname: '界面测试观众',
+    msg: `这是第 ${messages.value.length + 1} 条模拟弹幕`,
+    face: '',
+  });
+};
+
 // 使用 onActivated/onDeactivated 替代 onMounted/onUnmounted
 // 因为父组件使用了 KeepAlive，onMounted 只会在第一次进入时触发
 // onActivated 会在每次切换到弹幕 Tab 时触发，确保弹幕能重新连接
 onActivated(() => {
-  window.onDanmuMessage = (data) => {
-    addMessage(data);
-  };
+  window.onDanmuMessage = handleIncomingMessage;
   startDanmuMonitor();
 });
 
@@ -93,6 +109,12 @@ onActivated(() => {
         </label>
       </div>
     </div>
+
+    <SpeechToolbar
+      :service="speechService"
+      :dev-mode="isDev"
+      @simulate="simulateDanmu"
+    />
 
     <div class="message-list" ref="messageListRef" @scroll="handleScroll">
       <TransitionGroup name="msg-anim">

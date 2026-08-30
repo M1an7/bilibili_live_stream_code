@@ -11,10 +11,15 @@ import RtmpPanel from '@/components/RtmpPanel.vue';
 import MessageModal from '@/components/MessageModal.vue';
 import UserAccountModal from '@/components/UserAccountModal.vue';
 import WindowControls from '@/components/WindowControls.vue';
+import { createSpeechPreviewSession } from '@/dev/speechPreview';
 
 const { loadSavedConfig, getWindowPosition, windowDrag, refreshCurrentUser, syncRoomProfile } = useBridge();
 const activeTab = ref('account');
 const isInitializing = ref(true);
+const speechPreviewUser = createSpeechPreviewSession({
+  isDev: import.meta.env.DEV,
+  search: window.location.search,
+});
 
 const userInfo = reactive({ isLoggedIn: false, uname: '', face: '', level: 0, uid: '', money: 0, bcoin: 0, following: 0, follower: 0, dynamic_count: 0, current_exp: 0, next_exp: 0 });
 const globalForm = reactive({ roomId: '', cookie: '', csrf: '', title: '', announcement: '', area: '', subArea: '' });
@@ -115,12 +120,17 @@ const handlePointerUp = (event) => {
 
 onMounted(async () => {
   try {
-    const user = await loadSavedConfig();
-    if (user && user.uid) {
-      fillUserState(user);
-      // 启动应用时尝试更新
-      await tryRefreshUserInfo();
-      await syncRoomProfileToForm();
+    if (speechPreviewUser) {
+      fillUserState(speechPreviewUser);
+      activeTab.value = 'danmu';
+    } else {
+      const user = await loadSavedConfig();
+      if (user && user.uid) {
+        fillUserState(user);
+        // 启动应用时尝试更新
+        await tryRefreshUserInfo();
+        await syncRoomProfileToForm();
+      }
     }
   } catch (e) { console.error(e); } finally { isInitializing.value = false; }
 
