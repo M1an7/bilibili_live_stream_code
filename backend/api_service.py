@@ -11,6 +11,14 @@ from backend.services.live_service import LiveService
 from backend.services.auth_service import AuthService
 from backend.services.danmu_service import DanmuService
 from backend.services.system_speech_service import SystemSpeechService
+from backend.voice import (
+    VoiceContractError,
+    VoiceJobManager,
+    VoicePackBuilder,
+    VoicePackRegistry,
+    VoicePackValidator,
+    VoiceStoragePaths,
+)
 
 logger = logging.getLogger("ApiService")
 
@@ -42,6 +50,11 @@ class ApiService:
         self.auth_service = AuthService(self.api_client, self.user_service, self.live_service, self.session_state)
         self.danmu_service = DanmuService(self.api_client, self.session_state)
         self.speech_service = SystemSpeechService()
+        self.voice_paths = VoiceStoragePaths.resolve().ensure()
+        self.voice_validator = VoicePackValidator()
+        self.voice_builder = VoicePackBuilder(self.voice_paths, self.voice_validator)
+        self.voice_registry = VoicePackRegistry(self.voice_paths, self.voice_validator)
+        self.voice_jobs = VoiceJobManager(self.voice_builder, self.voice_registry)
         
         # 设置弹幕回调
         self.danmu_service.set_callback(self._on_danmu_message)
@@ -166,6 +179,78 @@ class ApiService:
 
     def stop_speech(self):
         return self.speech_service.stop()
+
+    # --- Personalized Voice Pack Methods ---
+    @staticmethod
+    def _voice_error(exc):
+        if isinstance(exc, VoiceContractError):
+            return {
+                "code": -1,
+                "msg": exc.message,
+                "error": {"code": exc.code, "message": exc.message, "field": exc.field},
+            }
+        logger.exception("Voice pack operation failed")
+        return {
+            "code": -1,
+            "msg": "音色操作失败，请查看应用日志",
+            "error": {"code": "internal_error", "message": "音色操作失败，请查看应用日志", "field": ""},
+        }
+
+    def choose_voice_source(self, kind):
+        filters = {
+            "gpt": ("GPT 权重 (*.ckpt)",),
+            "sovits": ("SoVITS 权重 (*.pth)",),
+            "reference": ("PCM WAV 音频 (*.wav)",),
+            "license": ("授权说明 (*.txt;*.md;*.pdf)", "所有文件 (*.*)"),
+        }
+        if kind not in filters:
+            return self._voice_error(VoiceContractError("invalid_source_kind", "不支持的文件选择类型"))
+        try:
+            import webview
+
+            windows = getattr(webview, "windows", [])
+            if not windows:
+                raise VoiceContractError("window_unavailable", "桌面窗口尚未就绪")
+            dialog_api = getattr(webview, "FileDialog", None)
+            dialog_type = dialog_api.OPEN if dialog_api else getattr(webview, "OPEN_DIALOG")
+            result = windows[0].create_file_dialog(
+                dialog_type,
+                allow_multiple=False,
+                file_types=filters[kind],
+            )
+            if isinstance(result, (tuple, list)):
+                selected = str(result[0]) if result else ""
+            else:
+                selected = str(result or "")
+            return {"code": 0, "data": {"path": selected}}
+        except VoiceContractError as exc:
+            return self._voice_error(exc)
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def start_voice_pack_build(self, request):
+        try:
+            return {"code": 0, "data": {"job_id": self.voice_jobs.start_build(request)}}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def get_voice_job(self, job_id):
+        try:
+            return {"code": 0, "data": self.voice_jobs.get(job_id)}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def cancel_voice_job(self, job_id):
+        try:
+            return {"code": 0, "data": {"cancelled": self.voice_jobs.cancel(job_id)}}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def list_voice_packs(self):
+        try:
+            return {"code": 0, "data": self.voice_registry.list_packs()}
+        except Exception as exc:
+            return self._voice_error(exc)
 
     # --- App Config Methods ---
     def get_app_config(self):

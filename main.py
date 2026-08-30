@@ -239,7 +239,10 @@ if __name__ == '__main__':
             # 3. 停止本机语音播报
             api_service.speech_service.stop()
 
-            # 4. 保存配置
+            # 4. 取消并回收音色导入后台任务
+            api_service.voice_jobs.shutdown()
+
+            # 5. 保存配置
             api_service.config_manager.save()
             print("Services cleaned up.")
         except Exception as e:
