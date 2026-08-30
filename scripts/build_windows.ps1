@@ -66,6 +66,7 @@ try {
         "--add-data", "bilibili.ico;.",
         "--add-data", "VERSION;.",
         "--hidden-import", "backend.services.system_speech_service",
+        "--collect-submodules", "backend.voice",
         "--hidden-import", "_cffi_backend",
         "--hidden-import", "cffi",
         "--hidden-import", "qtpy",

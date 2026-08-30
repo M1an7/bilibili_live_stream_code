@@ -33,6 +33,13 @@ class WindowsPackagingTests(unittest.TestCase):
 
         self.assertIn('"backend.services.system_speech_service"', script)
 
+    def test_collects_voice_import_code_without_bundling_voice_models(self):
+        script = BUILD_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('"--collect-submodules", "backend.voice"', script)
+        for private_asset in ("voice/", "*.ckpt", "*.pth", "reference.wav"):
+            self.assertNotIn(private_asset, script)
+
 
 if __name__ == "__main__":
     unittest.main()

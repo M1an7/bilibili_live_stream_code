@@ -1,6 +1,6 @@
 # Voice Pack Import Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add a safe, testable desktop workflow that accepts GPT-SoVITS v2Pro/v2ProPlus training results, builds the standard voice-pack layout, installs it in a non-selectable `runtime_required` state, and exposes an import wizard beside the speech voice selector.
 
@@ -41,7 +41,7 @@
 - Produces: `VoiceManifest.relative_files() -> dict[str, str]`
 - Produces: `VoiceContractError(code: str, message: str, field: str = "")`
 
-- [ ] **Step 1: Write failing storage and manifest tests**
+- [x] **Step 1: Write failing storage and manifest tests**
 
 ```python
 def test_windows_storage_uses_local_app_data(self):
@@ -64,13 +64,13 @@ def test_manifest_requires_japanese_output_for_this_pack(self):
         VoiceManifest.from_dict(payload)
 ```
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python -m unittest tests.test_voice_storage_and_manifest -v`
 
 Expected: FAIL because `backend.voice.storage` and `backend.voice.manifest` do not exist.
 
-- [ ] **Step 3: Implement path resolution and strict manifest parsing**
+- [x] **Step 3: Implement path resolution and strict manifest parsing**
 
 `storage.py` defines immutable paths for `voices`, `runtimes`, `cache/speech`, `staging`, and `logs`. `resolve()` uses `BILILIVE_DATA_HOME` as a test/development override, `%LOCALAPPDATA%` on Windows, `~/Library/Application Support` on macOS, and `$XDG_DATA_HOME` or `~/.local/share` on Linux.
 
@@ -104,13 +104,13 @@ class VoiceManifest:
 
 Every contract path is normalized with `PurePosixPath`; absolute paths, empty components, `.` and `..` are rejected. `usage` must contain `ai_training`, `synthetic_speech`, and `public_livestream`. `source_language` and output languages accept `ja`, while the data model remains capable of holding future approved languages.
 
-- [ ] **Step 4: Run the tests and verify GREEN**
+- [x] **Step 4: Run the tests and verify GREEN**
 
 Run: `python -m unittest tests.test_voice_storage_and_manifest -v`
 
 Expected: all tests PASS.
 
-- [ ] **Step 5: Commit the contract layer**
+- [x] **Step 5: Commit the contract layer**
 
 ```bash
 git add backend/voice tests/test_voice_storage_and_manifest.py
@@ -135,7 +135,7 @@ git commit -m "feat: add voice pack storage and manifest contract"
 - Produces: `VoiceValidationResult(valid, health, code, message, manifest)`
 - Produces: `BuiltVoicePack(staging_path, manifest, validation)`
 
-- [ ] **Step 1: Write failing tests for a valid build and rejected inputs**
+- [x] **Step 1: Write failing tests for a valid build and rejected inputs**
 
 ```python
 def test_builds_standard_pack_with_real_hashes(self):
@@ -165,13 +165,13 @@ def test_rejects_non_pcm_wav_without_touching_source(self):
         self.builder.build(self.make_request())
 ```
 
-- [ ] **Step 2: Run the builder tests and verify RED**
+- [x] **Step 2: Run the builder tests and verify RED**
 
 Run: `python -m unittest tests.test_voice_pack_builder -v`
 
 Expected: FAIL because validator and builder modules do not exist.
 
-- [ ] **Step 3: Implement structural validation**
+- [x] **Step 3: Implement structural validation**
 
 `VoicePackValidator` performs two passes: contract/path/type/size checks, then streaming SHA-256 checks. The allowed installed files are exactly:
 
@@ -184,17 +184,17 @@ ALLOWED_EXACT = {
 
 `preview.wav` is optional while health is `runtime_required`. The validator returns `health="runtime_required"` after every structural and hash check passes; it never imports `torch` and never opens `.ckpt` or `.pth` as structured objects.
 
-- [ ] **Step 4: Implement the training-result builder**
+- [x] **Step 4: Implement the training-result builder**
 
 The builder validates all source paths before copying, creates `staging/<uuid4>/`, copies weights as opaque streams, validates the reference with the standard-library `wave` reader, writes UTF-8 `reference.txt`, copies the license, computes hashes, writes `manifest.json`, and runs the validator on the staged package. Progress callbacks use stages `prepare`, `copy`, `hash`, and `validate` with integer percentages. Cancellation raises `VoiceJobCancelled` and removes only the random staging directory created by that build.
 
-- [ ] **Step 5: Run builder tests and verify GREEN**
+- [x] **Step 5: Run builder tests and verify GREEN**
 
 Run: `python -m unittest tests.test_voice_pack_builder -v`
 
 Expected: all tests PASS and test temporary directories are removed.
 
-- [ ] **Step 6: Commit builder and validation**
+- [x] **Step 6: Commit builder and validation**
 
 ```bash
 git add backend/voice tests/test_voice_pack_builder.py
@@ -220,7 +220,7 @@ git commit -m "feat: build and validate staged voice packs"
 - Produces: `VoiceJobManager.get(job_id: str) -> dict`
 - Produces API: `choose_voice_source(kind)`, `start_voice_pack_build(request)`, `get_voice_job(job_id)`, `list_voice_packs()`
 
-- [ ] **Step 1: Write failing registry and job tests**
+- [x] **Step 1: Write failing registry and job tests**
 
 ```python
 def test_atomic_install_is_management_only_until_runtime_ready(self):
@@ -242,17 +242,17 @@ def test_background_job_reports_structured_completion(self):
     self.assertEqual(result["result"]["health"], "runtime_required")
 ```
 
-- [ ] **Step 2: Run registry/job tests and verify RED**
+- [x] **Step 2: Run registry/job tests and verify RED**
 
 Run: `python -m unittest tests.test_voice_registry_and_jobs -v`
 
 Expected: FAIL because registry and job manager do not exist.
 
-- [ ] **Step 3: Implement atomic registry behavior**
+- [x] **Step 3: Implement atomic registry behavior**
 
 The registry validates staged content again, moves it to `voices/.incoming-<uuid>`, then renames to `voices/<voice-id>`. Updates move the old directory to `.backup-<uuid>` and restore it if the final rename fails. Registry records expose `voice_key="pack:<voice-id>"`, health, selectable flag, display name, model version, language, and a short mapped error. Startup scanning never follows symlinks and maps malformed packages to `health="invalid"` without preventing application startup.
 
-- [ ] **Step 4: Implement background jobs**
+- [x] **Step 4: Implement background jobs**
 
 `VoiceJobManager` uses daemon worker threads and a lock-protected dictionary. `start_build()` immediately returns a random UUID job ID. `get()` returns only JSON-safe fields:
 
@@ -270,17 +270,17 @@ The registry validates staged content again, moves it to `voices/.incoming-<uuid
 
 Completed jobs install through the registry. Failures remove their staging directory and preserve existing installed packs.
 
-- [ ] **Step 5: Wire ApiService and shutdown cleanup**
+- [x] **Step 5: Wire ApiService and shutdown cleanup**
 
 `ApiService.__init__` constructs paths, validator, builder, registry, and jobs. `choose_voice_source(kind)` lazily opens the active pywebview window's native file dialog with an allowlist for `gpt`, `sovits`, `reference`, and `license`; cancellation returns an empty path without changing wizard state. Public methods wrap exceptions as `{"code": -1, "msg": ..., "error": {"code": ...}}`; successful methods return `{"code": 0, "data": ...}`. `main.cleanup_services()` calls `api.voice_jobs.shutdown()` after stopping speech.
 
-- [ ] **Step 6: Run backend tests and verify GREEN**
+- [x] **Step 6: Run backend tests and verify GREEN**
 
 Run: `python -m unittest discover -s tests -v`
 
 Expected: all backend tests PASS.
 
-- [ ] **Step 7: Commit registry, jobs, and API**
+- [x] **Step 7: Commit registry, jobs, and API**
 
 ```bash
 git add backend/voice backend/api_service.py main.py tests/test_voice_registry_and_jobs.py
@@ -302,7 +302,7 @@ git commit -m "feat: expose background voice pack imports"
 - Produces speech state: `systemVoices`, `voicePacks`, `selectedVoiceKey`
 - Maintains compatibility: existing `voiceURI` settings migrate to `system:<voiceURI>`
 
-- [ ] **Step 1: Add failing speech catalog tests**
+- [x] **Step 1: Add failing speech catalog tests**
 
 ```javascript
 it('migrates an old system voice URI into a system voice key', async () => {
@@ -322,17 +322,17 @@ it('keeps runtime-required packs out of selectable voices', async () => {
 });
 ```
 
-- [ ] **Step 2: Run frontend tests and verify RED**
+- [x] **Step 2: Run frontend tests and verify RED**
 
 Run: `cd frontend && npm test -- src/services/speechService.spec.js`
 
 Expected: FAIL because the state still exposes only `voiceURI`.
 
-- [ ] **Step 3: Add bridge methods and catalog migration**
+- [x] **Step 3: Add bridge methods and catalog migration**
 
 Bridge methods pass plain JSON payloads to pywebview and preserve structured errors. Speech service maps discovered system voices to `voiceKey="system:<voiceURI>"`, stores `selectedVoiceKey`, and derives the legacy system URI only when calling browser/SAPI speech. It loads pack management records through the backend but appends only `selectable && health === "ready"` packs to the voice selector.
 
-- [ ] **Step 4: Run focused and full frontend tests**
+- [x] **Step 4: Run focused and full frontend tests**
 
 Run: `cd frontend && npm test -- src/services/speechService.spec.js`
 
@@ -340,7 +340,7 @@ Run: `cd frontend && npm test`
 
 Expected: all tests PASS.
 
-- [ ] **Step 5: Commit bridge and catalog changes**
+- [x] **Step 5: Commit bridge and catalog changes**
 
 ```bash
 git add frontend/src/api/bridge.js frontend/src/services/speechService.js frontend/src/services/speechService.spec.js
@@ -364,7 +364,7 @@ git commit -m "feat: add personalized voice catalog state"
 - Produces event: `SpeechToolbar` emits `import-voice`
 - Produces modal props: `visible`, `bridge`; events: `close`, `installed`
 
-- [ ] **Step 1: Add failing toolbar and wizard tests**
+- [x] **Step 1: Add failing toolbar and wizard tests**
 
 ```javascript
 it('places an import button beside the voice selector', async () => {
@@ -383,17 +383,17 @@ it('submits a v2Pro Japanese training-result build', async () => {
 });
 ```
 
-- [ ] **Step 2: Run component tests and verify RED**
+- [x] **Step 2: Run component tests and verify RED**
 
 Run: `cd frontend && npm test -- src/components/SpeechToolbar.spec.js src/components/VoiceImportModal.spec.js`
 
 Expected: FAIL because the button and modal do not exist.
 
-- [ ] **Step 3: Add the toolbar entry point**
+- [x] **Step 3: Add the toolbar entry point**
 
 Add a compact `导入` button immediately after the voice select. Preserve existing enable, queue, skip, rate, volume, and development simulation controls. The select groups system and ready personalized voices with `<optgroup>` labels; runtime-required packs are not options.
 
-- [ ] **Step 4: Implement the four-step wizard**
+- [x] **Step 4: Implement the four-step wizard**
 
 The modal contains:
 
@@ -404,11 +404,11 @@ The modal contains:
 
 The desktop build uses `chooseVoiceSource(kind)` to open native file dialogs; browser development keeps ordinary path text inputs so the wizard remains testable without pywebview. Client validation blocks missing fields, wrong extensions, unsupported versions, empty Japanese text, and unconfirmed permissions. After submission it polls every 250 ms, stops polling on terminal state or unmount, and displays `runtime_required` as `文件已安全导入，等待安装 CPU 运行时后试听并启用`.
 
-- [ ] **Step 5: Integrate the modal in DanmuPanel**
+- [x] **Step 5: Integrate the modal in DanmuPanel**
 
 DanmuPanel owns modal visibility. On `installed`, it refreshes the speech catalog without enabling speech or changing the current selected system voice.
 
-- [ ] **Step 6: Run frontend tests and production build**
+- [x] **Step 6: Run frontend tests and production build**
 
 Run: `cd frontend && npm test`
 
@@ -416,7 +416,7 @@ Run: `cd frontend && npm run build`
 
 Expected: tests PASS and Vite build exits 0.
 
-- [ ] **Step 7: Commit the import UI**
+- [x] **Step 7: Commit the import UI**
 
 ```bash
 git add frontend/src/components frontend/src/components/DanmuPanel.vue
@@ -435,21 +435,21 @@ git commit -m "feat: add voice training result import wizard"
 **Interfaces:**
 - Verifies all interfaces produced by Tasks 1–5.
 
-- [ ] **Step 1: Add packaging assertions before changing documentation**
+- [x] **Step 1: Add packaging assertions before changing documentation**
 
 Extend `tests/test_windows_packaging.py` to require the packaged app to include `backend.voice` modules and to keep model files out of the one-file EXE.
 
-- [ ] **Step 2: Run packaging test and verify RED if hidden imports are missing**
+- [x] **Step 2: Run packaging test and verify RED if hidden imports are missing**
 
 Run: `python -m unittest tests.test_windows_packaging -v`
 
 Expected: FAIL until the Windows build script contains the voice package hidden import or collection entry.
 
-- [ ] **Step 3: Update packaging and user documentation**
+- [x] **Step 3: Update packaging and user documentation**
 
 Document the standard training-result inputs, the application-data location, and the deliberate `runtime_required` state. Explicitly state that this milestone does not synthesize with the imported pack yet and never falls back silently to another voice.
 
-- [ ] **Step 4: Run complete verification**
+- [x] **Step 4: Run complete verification**
 
 Run: `python -m unittest discover -s tests -v`
 
@@ -461,13 +461,13 @@ Run: `git diff --check`
 
 Expected: every command exits 0, with no failed tests or whitespace errors.
 
-- [ ] **Step 5: Start the hot-reload preview for user review**
+- [x] **Step 5: Start the hot-reload preview for user review**
 
 Run: `cd frontend && npm run dev -- --host 127.0.0.1`
 
 Open the development URL with the existing speech preview query. Confirm visually that the `导入` button is beside the voice selector, all four wizard steps fit the 1000×720 desktop viewport, and closing the modal restores keyboard focus.
 
-- [ ] **Step 6: Mark executed plan checkboxes and commit milestone**
+- [x] **Step 6: Mark executed plan checkboxes and commit milestone**
 
 ```bash
 git add README.md tests/test_windows_packaging.py scripts/build_windows.ps1 docs/superpowers/plans/2026-08-31-voice-pack-import-foundation.md
