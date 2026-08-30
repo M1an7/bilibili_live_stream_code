@@ -96,12 +96,12 @@
 - `release_personalized_voice()`
 - `speak_text(text, voice_uri, rate, volume, voice_key="")`
 
-- [ ] Write failing routing tests proving `system:` only reaches SAPI and `pack:` only reaches the GPU service.
-- [ ] Add runtime install jobs and structured error mapping.
-- [ ] Wire runtime/voice/personalized services without importing runtime code into the main process.
-- [ ] Extend cleanup to cancel playback and terminate the GPU sidecar.
-- [ ] Run all backend tests.
-- [ ] Commit: `feat: route personalized voices through gpu runtime`
+- [x] Write failing routing tests proving `system:` only reaches SAPI and `pack:` only reaches the GPU service.
+- [x] Add runtime install jobs and structured error mapping.
+- [x] Wire runtime/voice/personalized services while keeping PyTorch/CUDA imports in the sidecar process.
+- [x] Extend cleanup to cancel playback and terminate the GPU sidecar.
+- [x] Run all backend tests.
+- [x] Commit: `feat: route personalized voices through gpu runtime`
 
 ## Task 5: Frontend Preparation Flow and GPU Runtime UI
 

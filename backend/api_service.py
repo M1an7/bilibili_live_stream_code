@@ -2,6 +2,9 @@ import logging
 import asyncio
 import threading
 import sys
+import os
+from dataclasses import replace
+from pathlib import Path
 from backend.bilibili_api import BilibiliApi
 from backend.config import Config
 from backend.state import SessionState
@@ -11,6 +14,17 @@ from backend.services.live_service import LiveService
 from backend.services.auth_service import AuthService
 from backend.services.danmu_service import DanmuService
 from backend.services.system_speech_service import SystemSpeechService
+from backend.services.personalized_speech_service import PersonalizedSpeechService
+from backend.services.streaming_audio_player import AudioPlaybackError, StreamingAudioPlayer
+from backend.runtime import (
+    GpuRuntimeManager,
+    RuntimeContractError,
+    RuntimeInstaller,
+    RuntimeInstallJobManager,
+    RuntimeRegistry,
+    RuntimeVerifier,
+)
+from backend.runtime.client import SidecarError
 from backend.voice import (
     VoiceContractError,
     VoiceJobManager,
@@ -19,6 +33,7 @@ from backend.voice import (
     VoicePackValidator,
     VoiceStoragePaths,
 )
+from backend.voice.health import VoiceHealthStore
 
 logger = logging.getLogger("ApiService")
 
@@ -50,11 +65,16 @@ class ApiService:
         self.auth_service = AuthService(self.api_client, self.user_service, self.live_service, self.session_state)
         self.danmu_service = DanmuService(self.api_client, self.session_state)
         self.speech_service = SystemSpeechService()
-        self.voice_paths = VoiceStoragePaths.resolve().ensure()
+        storage_env = dict(os.environ)
+        configured_runtime_root = str(self.config_manager.data.get("runtime_root", "")).strip()
+        if configured_runtime_root:
+            storage_env["BILILIVE_RUNTIME_HOME"] = configured_runtime_root
+        self.voice_paths = VoiceStoragePaths.resolve(env=storage_env).ensure()
         self.voice_validator = VoicePackValidator()
         self.voice_builder = VoicePackBuilder(self.voice_paths, self.voice_validator)
         self.voice_registry = VoicePackRegistry(self.voice_paths, self.voice_validator)
         self.voice_jobs = VoiceJobManager(self.voice_builder, self.voice_registry)
+        self._initialize_gpu_services()
         
         # 设置弹幕回调
         self.danmu_service.set_callback(self._on_danmu_message)
@@ -79,6 +99,26 @@ class ApiService:
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         frontend_handler.setFormatter(formatter)
         root_logger.addHandler(frontend_handler)
+
+    def _initialize_gpu_services(self):
+        allow_unsigned = os.environ.get("BILILIVE_ALLOW_UNSIGNED_RUNTIME", "").strip() == "1"
+        self.runtime_verifier = RuntimeVerifier(allow_unsigned=allow_unsigned)
+        self.runtime_registry = RuntimeRegistry(self.voice_paths, self.runtime_verifier)
+        self.runtime_installer = RuntimeInstaller(self.voice_paths, self.runtime_verifier)
+        self.runtime_jobs = RuntimeInstallJobManager(self.runtime_installer, self.runtime_registry)
+        self.gpu_runtime_manager = GpuRuntimeManager(
+            self.voice_paths.logs,
+            self.voice_paths.voices,
+        )
+        self.voice_health = VoiceHealthStore(self.voice_paths)
+        self.personalized_speech = PersonalizedSpeechService(
+            self.voice_paths,
+            self.voice_registry,
+            self.runtime_registry,
+            self.gpu_runtime_manager,
+            StreamingAudioPlayer(),
+            self.voice_health,
+        )
 
     def _start_loop(self, loop):
         asyncio.set_event_loop(loop)
@@ -174,20 +214,27 @@ class ApiService:
     def get_speech_capabilities(self):
         return self.speech_service.get_capabilities()
 
-    def speak_text(self, text, voice_uri="", rate=1.0, volume=1.0):
-        return self.speech_service.speak(text, voice_uri, rate, volume)
+    def speak_text(self, text, voice_uri="", rate=1.0, volume=1.0, voice_key=""):
+        try:
+            if isinstance(voice_key, str) and voice_key.startswith("pack:"):
+                return self.personalized_speech.speak(text, voice_key, volume=volume, rate=rate)
+            return self.speech_service.speak(text, voice_uri, rate, volume)
+        except Exception as exc:
+            return self._voice_error(exc)
 
     def stop_speech(self):
-        return self.speech_service.stop()
+        system_result = self.speech_service.stop()
+        self.personalized_speech.stop()
+        return system_result
 
     # --- Personalized Voice Pack Methods ---
     @staticmethod
     def _voice_error(exc):
-        if isinstance(exc, VoiceContractError):
+        if isinstance(exc, (VoiceContractError, RuntimeContractError, SidecarError, AudioPlaybackError)):
             return {
                 "code": -1,
                 "msg": exc.message,
-                "error": {"code": exc.code, "message": exc.message, "field": exc.field},
+                "error": {"code": exc.code, "message": exc.message, "field": getattr(exc, "field", "")},
             }
         logger.exception("Voice pack operation failed")
         return {
@@ -249,6 +296,84 @@ class ApiService:
     def list_voice_packs(self):
         try:
             return {"code": 0, "data": self.voice_registry.list_packs()}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    # --- GPU Runtime and Personalized Speech Methods ---
+    def choose_runtime_source(self, kind):
+        if kind not in ("zip", "directory", "data_root"):
+            return self._voice_error(RuntimeContractError("invalid_source_kind", "不支持的 GPU 运行时选择类型"))
+        try:
+            import webview
+
+            windows = getattr(webview, "windows", [])
+            if not windows:
+                raise RuntimeContractError("window_unavailable", "桌面窗口尚未就绪")
+            dialog_api = getattr(webview, "FileDialog", None)
+            if kind == "zip":
+                dialog_type = dialog_api.OPEN if dialog_api else getattr(webview, "OPEN_DIALOG")
+                options = {"allow_multiple": False, "file_types": ("GPU 运行时 (*.zip)",)}
+            else:
+                dialog_type = dialog_api.FOLDER if dialog_api else getattr(webview, "FOLDER_DIALOG")
+                options = {}
+            result = windows[0].create_file_dialog(dialog_type, **options)
+            selected = str(result[0]) if isinstance(result, (tuple, list)) and result else str(result or "")
+            return {"code": 0, "data": {"path": selected}}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def configure_runtime_root(self, path):
+        try:
+            target = Path(str(path)).expanduser().resolve()
+            target.mkdir(parents=True, exist_ok=True)
+            if not target.is_dir():
+                raise RuntimeContractError("invalid_runtime_root", "GPU 运行时数据目录无效")
+            self.personalized_speech.shutdown()
+            self.runtime_jobs.shutdown()
+            self.config_manager.data["runtime_root"] = str(target)
+            self.config_manager.save()
+            self.voice_paths = replace(self.voice_paths, runtimes=target).ensure()
+            self._initialize_gpu_services()
+            return {"code": 0, "data": self.runtime_registry.status()}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def start_runtime_install(self, request):
+        try:
+            return {"code": 0, "data": {"job_id": self.runtime_jobs.start(request)}}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def get_runtime_job(self, job_id):
+        try:
+            return {"code": 0, "data": self.runtime_jobs.get(job_id)}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def get_gpu_runtime_status(self):
+        try:
+            data = self.runtime_registry.status()
+            data["process"] = self.gpu_runtime_manager.status() if hasattr(self, "gpu_runtime_manager") else {"state": "stopped"}
+            return {"code": 0, "data": data}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def prepare_voice(self, voice_key):
+        try:
+            return {"code": 0, "data": self.personalized_speech.prepare(voice_key)}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def preview_voice(self, voice_key, text=""):
+        try:
+            return {"code": 0, "data": self.personalized_speech.prepare(voice_key, text)}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def release_personalized_voice(self):
+        try:
+            self.personalized_speech.shutdown()
+            return {"code": 0}
         except Exception as exc:
             return self._voice_error(exc)
 

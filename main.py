@@ -242,7 +242,11 @@ if __name__ == '__main__':
             # 4. 取消并回收音色导入后台任务
             api_service.voice_jobs.shutdown()
 
-            # 5. 保存配置
+            # 5. 停止 GPU 语音播放、侧车进程与运行时安装任务
+            api_service.personalized_speech.shutdown()
+            api_service.runtime_jobs.shutdown()
+
+            # 6. 保存配置
             api_service.config_manager.save()
             print("Services cleaned up.")
         except Exception as e:
