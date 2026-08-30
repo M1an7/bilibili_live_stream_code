@@ -135,6 +135,14 @@ def _get_primary_monitor_scale_win():
 
 if __name__ == '__main__':
     api = ApiService()
+    html_path = get_html_path()
+    logger.info(
+        "Frontend entry path: %s (exists=%s, is_file=%s, frozen=%s)",
+        html_path,
+        os.path.exists(html_path),
+        os.path.isfile(html_path),
+        bool(getattr(sys, 'frozen', False)),
+    )
     window_width = 1000
     window_height = 720
     scale = 1.0
@@ -143,7 +151,7 @@ if __name__ == '__main__':
         scale = _get_primary_monitor_scale_win()
     window = webview.create_window(
         'B站直播工具',
-        url=get_html_path(),
+        url=html_path,
         js_api=api,
         width=window_width,
         height=window_height,
@@ -499,6 +507,13 @@ if __name__ == '__main__':
 
     # 定义启动回调：先显示窗口，再初始化 Linux 托盘
     def on_app_start(window_obj=None):
+        logger.info(
+            "Window URL mapping: original=%s, real=%s, common=%s, prefix=%s",
+            getattr(window, 'original_url', None),
+            getattr(window, 'real_url', None),
+            getattr(window, '_common_path', None),
+            getattr(window, '_url_prefix', None),
+        )
         if window_obj:
             center_and_show_window(window_obj)
         else:

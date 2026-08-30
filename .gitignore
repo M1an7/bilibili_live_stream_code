@@ -6,6 +6,7 @@ api_md/
 
 # --- Python ---
 .venv/
+.venv-win/
 venv/
 __pycache__/
 *.pyc

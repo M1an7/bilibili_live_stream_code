@@ -41,6 +41,22 @@
 - **Python**: 3.9+
 - **Node.js**: 18+
 
+### Windows 一键封装
+
+在 Windows PowerShell 中运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
+```
+
+脚本会创建独立的 `.venv-win` 构建环境、编译前端，并生成单文件无控制台窗口程序：
+
+```text
+dist\BiliLiveTool.exe
+```
+
+封装内容不包含账号 Cookie、本地配置、测试文件或个性化音色模型。当前语音播报使用 Windows 系统音色，后续个性化音色可继续接入现有语音接口。
+
 ### 构建步骤
 
 1. **克隆仓库**

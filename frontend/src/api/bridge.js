@@ -1,4 +1,5 @@
 import { reactive } from 'vue';
+import { createPywebviewWaiter } from './pywebviewReady';
 
 const state = reactive({ logs: [] });
 
@@ -26,19 +27,15 @@ window.onBackendLog = (msg) => {
   log(msg);
 };
 
-// 等待 pywebview 就绪的 Promise
-const waitPywebview = new Promise((resolve) => {
-  if (window.pywebview) {
-    resolve();
-  } else {
-    window.addEventListener('pywebviewready', () => resolve());
-    setTimeout(() => resolve(), 3000);
-  }
+// 开发预览超时后使用 mock；桌面生产版持续等待 pywebview 真正就绪。
+const waitPywebview = createPywebviewWaiter({
+  target: window,
+  isDev: import.meta.env.DEV,
 });
 
 const callPy = async (funcName, ...args) => {
-  await waitPywebview;
-  if (window.pywebview) {
+  const ready = await waitPywebview();
+  if (ready && window.pywebview) {
     try {
       return await window.pywebview.api[funcName](...args);
     } catch (e) {
