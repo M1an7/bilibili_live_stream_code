@@ -166,6 +166,7 @@ class PersonalizedSpeechTests(unittest.TestCase):
         self.assertEqual("ja", request["prompt_language"])
         self.assertTrue(Path(request["gpt_path"]).is_absolute())
         self.assertTrue((self.paths.voices / "haibara-jp" / "preview.wav").is_file())
+        self.assertEqual(90.0, manager.spoken[0][2]["request_timeout"])
         manifest = json.loads((self.paths.voices / "haibara-jp" / "manifest.json").read_text("utf-8"))
         self.assertEqual("preview.wav", manifest["preview_audio"])
         self.assertIn("preview.wav", manifest["files"])

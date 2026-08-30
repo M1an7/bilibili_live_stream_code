@@ -8,9 +8,10 @@ import unittest
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from backend.runtime.registry import RuntimeVerifier
+from backend.runtime.keys import release_public_key
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,11 @@ PIN = (ROOT / "runtime" / "gpt_sovits_gpu" / "PINNED_GPT_SOVITS_COMMIT").read_te
 
 
 class GpuRuntimePackagingTests(unittest.TestCase):
+    def test_bundled_release_public_key_is_a_valid_ed25519_key(self):
+        public = release_public_key()
+        self.assertEqual(32, len(public))
+        Ed25519PublicKey.from_public_bytes(public)
+
     def test_builder_is_data_disk_first_pinned_cu126_and_separate(self):
         script = BUILD.read_text("utf-8")
         self.assertIn("[string]$BuildRoot", script)
@@ -34,6 +40,10 @@ class GpuRuntimePackagingTests(unittest.TestCase):
         self.assertIn("ffmpeg.exe", script.lower())
         self.assertIn("BiliLiveTool-GPT-SoVITS-CU126", script)
         self.assertIn("Compress-Archive", script)
+        self.assertIn("PythonInstallerSha256", script)
+        self.assertIn("Start-Process", script)
+        self.assertIn("python-3.10.11-amd64.exe", script)
+        self.assertIn("PretrainedModelsArchive", script)
 
     def test_builder_requires_base_models_and_preserves_upstream_license(self):
         script = BUILD.read_text("utf-8")
@@ -42,6 +52,7 @@ class GpuRuntimePackagingTests(unittest.TestCase):
             "chinese-roberta-wwm-ext-large",
             "pretrained_models/sv",
             "pretrained_models/v2Pro",
+            "fast_langdetect/lid.176.bin",
             "LICENSE",
         ):
             self.assertIn(required, script)

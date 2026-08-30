@@ -64,12 +64,13 @@ class PcmStream(Iterator[bytes]):
 
 
 class SidecarClient:
-    def __init__(self, host: str, port: int, token: str, timeout: float = 30.0):
+    def __init__(self, host: str, port: int, token: str, timeout: float = 30.0, load_timeout: float = 600.0):
         if host not in ("127.0.0.1", "::1"):
             raise ValueError("GPU 侧车只允许回环地址")
         self.base_url = f"http://{host}:{port}"
         self.token = token
         self.timeout = timeout
+        self.load_timeout = load_timeout
 
     def _request(self, method: str, path: str, payload: dict | None = None, timeout: float | None = None):
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -86,7 +87,10 @@ class SidecarClient:
         try:
             return urllib.request.urlopen(request, timeout=self.timeout if timeout is None else timeout)
         except urllib.error.HTTPError as exc:
-            body = exc.read(MAX_ERROR_BODY)
+            try:
+                body = exc.read(MAX_ERROR_BODY)
+            finally:
+                exc.close()
             try:
                 error = json.loads(body.decode("utf-8"))
             except (UnicodeError, json.JSONDecodeError):
@@ -118,10 +122,15 @@ class SidecarClient:
         return self._json("GET", "/v1/health", timeout=timeout)
 
     def load_voice(self, request: dict) -> dict:
-        return self._json("POST", "/v1/voices/load", request)
+        return self._json("POST", "/v1/voices/load", request, timeout=self.load_timeout)
 
-    def synthesize(self, request: dict, on_close: Callable[[], None] | None = None) -> PcmStream:
-        response = self._request("POST", "/v1/tts", request)
+    def synthesize(
+        self,
+        request: dict,
+        on_close: Callable[[], None] | None = None,
+        timeout: float | None = None,
+    ) -> PcmStream:
+        response = self._request("POST", "/v1/tts", request, timeout=timeout)
         stream = PcmStream(response, on_close=on_close)
         if stream.sample_rate <= 0 or stream.channels not in (1, 2) or stream.sample_width not in (1, 2, 3, 4):
             stream.close()

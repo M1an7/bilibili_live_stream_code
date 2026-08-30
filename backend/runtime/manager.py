@@ -162,7 +162,13 @@ class GpuRuntimeManager:
                 self._error = exc.to_dict()
             raise
 
-    def synthesize(self, text: str, language: str = "ja", **options) -> PcmStream:
+    def synthesize(
+        self,
+        text: str,
+        language: str = "ja",
+        request_timeout: float | None = None,
+        **options,
+    ) -> PcmStream:
         with self._lock:
             if self._state != "ready" or not self.client:
                 raise SidecarError("runtime_not_ready", "GPU 语音运行时尚未准备好")
@@ -175,7 +181,11 @@ class GpuRuntimeManager:
                     self._state = "ready"
 
         try:
-            stream = client.synthesize({"text": text, "language": language, **options}, on_close=complete)
+            stream = client.synthesize(
+                {"text": text, "language": language, **options},
+                on_close=complete,
+                timeout=request_timeout,
+            )
             with self._lock:
                 self.metrics["first_pcm_ms"] = stream.first_pcm_ms
             return stream

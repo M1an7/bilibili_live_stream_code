@@ -114,6 +114,21 @@ class GpuRuntimeManagerTests(unittest.TestCase):
         self.assertEqual("ready", manager.status()["state"])
         self.assertEqual(18, manager.status()["metrics"]["first_pcm_ms"])
 
+    def test_synthesis_can_use_a_separate_cold_warmup_timeout(self):
+        observed = {}
+
+        class TimeoutClient:
+            def synthesize(self, request, on_close=None, timeout=None):
+                observed["timeout"] = timeout
+                raise SidecarError("expected", "stop")
+
+        manager = self.manager()
+        manager._state = "ready"
+        manager.client = TimeoutClient()
+        with self.assertRaises(SidecarError):
+            manager.synthesize("準備中", request_timeout=90.0)
+        self.assertEqual(90.0, observed["timeout"])
+
     def test_structured_cuda_error_is_preserved(self):
         manager = self.manager()
         manager.prepare(self.record)

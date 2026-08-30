@@ -258,6 +258,27 @@ describe('createSpeechService', () => {
     expect(desktop.getState()).toMatchObject({ enabled: false, status: 'gpu_error', error: 'CUDA 显存不足' });
   });
 
+  it('releases an active GPU voice when switching to a system voice', async () => {
+    const backend = {
+      getCapabilities: vi.fn().mockResolvedValue({ code: 0, data: { supported: true, voices: [{ voiceURI: 'default', name: 'Default' }] } }),
+      listVoicePacks: vi.fn().mockResolvedValue({ code: 0, data: [{
+        voice_key: 'pack:test', display_name: '测试', health: 'ready', selectable: true,
+      }] }),
+      prepare: vi.fn().mockResolvedValue({ code: 0, data: { health: 'ready' } }),
+      stop: vi.fn().mockResolvedValue({ code: 0 }),
+      release: vi.fn().mockResolvedValue({ code: 0 }),
+    };
+    const desktop = createSpeechService({ synth: null, Utterance: null, backend, storage });
+    await desktop.initialize();
+    desktop.setVoice('pack:test');
+    await desktop.setEnabled(true);
+
+    desktop.setVoice('system:default');
+
+    await vi.waitFor(() => expect(backend.release).toHaveBeenCalledTimes(1));
+    expect(desktop.getState()).toMatchObject({ enabled: false, selectedVoiceKey: 'system:default' });
+  });
+
   it('waits for desktop stop confirmation before speaking the item after skip', async () => {
     let finishStop;
     const backend = {

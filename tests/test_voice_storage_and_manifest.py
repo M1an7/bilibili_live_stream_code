@@ -64,6 +64,11 @@ class VoiceManifestTests(unittest.TestCase):
         self.assertEqual(manifest.relative_files()["gpt"], "model/gpt.ckpt")
         self.assertEqual(VoiceManifest.from_dict(manifest.to_dict()), manifest)
 
+    def test_accepts_the_canonical_gpu_engine(self):
+        payload = valid_manifest_payload()
+        payload["engine"] = "gpt-sovits-gpu"
+        self.assertEqual("gpt-sovits-gpu", VoiceManifest.from_dict(payload).engine)
+
     def test_manifest_rejects_path_traversal(self):
         payload = valid_manifest_payload()
         payload["models"]["gpt"] = "../outside.ckpt"

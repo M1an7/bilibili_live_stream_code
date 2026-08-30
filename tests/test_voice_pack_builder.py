@@ -50,6 +50,7 @@ class VoicePackBuilderTests(unittest.TestCase):
     def test_builds_standard_pack_with_real_hashes(self):
         built = self.builder.build(self.make_request())
         manifest = json.loads((built.staging_path / "manifest.json").read_text("utf-8"))
+        self.assertEqual("gpt-sovits-gpu", manifest["engine"])
         self.assertEqual(manifest["models"]["gpt"], "model/gpt.ckpt")
         self.assertTrue(manifest["files"]["model/gpt.ckpt"].startswith("sha256:"))
         self.assertEqual(len(manifest["files"]["model/gpt.ckpt"]), 71)

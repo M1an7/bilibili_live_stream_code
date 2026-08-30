@@ -150,7 +150,7 @@ class VoicePackBuilder:
                 "schema_version": 1,
                 "voice_id": request.voice_id,
                 "display_name": request.display_name,
-                "engine": "gpt-sovits-cpu",
+                "engine": "gpt-sovits-gpu",
                 "engine_api_version": 1,
                 "model_version": request.model_version,
                 "source_language": request.source_language,

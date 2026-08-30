@@ -169,15 +169,15 @@
 - Create: `docs/gpu-runtime-benchmark.md`
 - Modify: `docs/superpowers/plans/2026-08-31-gpt-sovits-gpu-runtime.md`
 
-- [ ] Build or install the development GPU runtime without placing it on the system disk by default.
-- [ ] Import and prepare the actual `voice/haibara_jp` assets.
-- [ ] Synthesize fixed Japanese preview and typical short danmu; save only authorized local preview output.
-- [ ] Record startup, load, warm-up, first PCM, whole utterance, peak VRAM, and post-shutdown process/VRAM release.
-- [ ] Confirm audible output manually is left to the user, while automated checks enforce valid non-silent PCM and duration.
-- [ ] Run `python3 -m unittest discover -s tests -v`.
-- [ ] Run `cd frontend && npm test`.
-- [ ] Run `cd frontend && npm run build`.
-- [ ] Run `git diff --check` and packaging boundary checks.
+- [x] Build or install the development GPU runtime without placing it on the system disk by default.
+- [x] Import and prepare the actual `voice/haibara_jp` assets.
+- [x] Synthesize fixed Japanese preview and typical short danmu; save only authorized local preview output.
+- [x] Record startup, load, warm-up, first PCM, whole utterance, peak VRAM, and post-shutdown process/VRAM release.
+- [x] Confirm audible output manually is left to the user, while automated checks enforce valid non-silent PCM and duration.
+- [x] Run `python3 -m unittest discover -s tests -v`.
+- [x] Run `cd frontend && npm test`.
+- [x] Run `cd frontend && npm run build`.
+- [x] Run `git diff --check` and packaging boundary checks.
 - [ ] Start the hot-reload UI preview and verify the GPU controls fit 1000×720.
 - [ ] Mark the plan complete, commit benchmark/results, merge locally to `master`, and rerun all tests on the merged tree.
 

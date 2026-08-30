@@ -405,6 +405,7 @@ export const createSpeechService = ({
   };
 
   const setVoice = (voiceKey) => {
+    const releaseGpu = state.enabled && selectedIsPack();
     const normalized = typeof voiceKey === 'string' ? voiceKey : '';
     state.selectedVoiceKey = normalized && !normalized.includes(':') ? `system:${normalized}` : normalized;
     state.selectedVoiceURI = state.selectedVoiceKey.startsWith('system:')
@@ -414,6 +415,7 @@ export const createSpeechService = ({
       state.enabled = false;
       clear();
     }
+    if (releaseGpu) void Promise.resolve(backend?.release?.()).catch(() => {});
     persist();
     notify();
   };

@@ -6,6 +6,7 @@ param(
     [string]$Source = "HF",
     [string]$OutputDirectory = "",
     [string]$PrivateKeyPath = "",
+    [string]$PretrainedModelsArchive = "",
     [switch]$AllowUnsignedDevelopment,
     [switch]$Resume,
     [switch]$SkipDependencies,
@@ -25,6 +26,7 @@ $SourceCheckout = Join-Path $SourceRoot "GPT-SoVITS"
 $StageRoot = Join-Path $BuildRoot "stage\gpt-sovits-cu126"
 $UpstreamRoot = Join-Path $StageRoot "upstream"
 $RuntimePython = Join-Path $StageRoot "python\Scripts\python.exe"
+$PythonInstallerSha256 = "d8dede5005564b408ba50317108b765ed9c3c510342a598f9fd42681cbe0648b"
 
 function Assert-FreeSpace([string]$Path, [double]$MinimumGiB, [string]$Phase) {
     $DriveName = ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Path))).TrimEnd('\').TrimEnd(':')
@@ -72,8 +74,31 @@ Assert-FreeSpace $BuildRoot 16 "source"
 
 if (-not (Test-Path $RuntimePython)) {
     $PyLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
-    if (-not $PyLauncher) { $PyLauncher = Get-Command py -ErrorAction Stop }
-    Invoke-Checked { & $PyLauncher.Source -3.10 -m venv (Join-Path $StageRoot "python") } "Python 3.10 runtime creation"
+    if (-not $PyLauncher) { $PyLauncher = Get-Command py -ErrorAction SilentlyContinue }
+    $CreatedRuntime = $false
+    if ($PyLauncher) {
+        & $PyLauncher.Source -3.10 -c "import sys; assert sys.version_info[:2] == (3, 10)" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Invoke-Checked { & $PyLauncher.Source -3.10 -m venv (Join-Path $StageRoot "python") } "Python 3.10 runtime creation"
+            $CreatedRuntime = $true
+        }
+    }
+    if (-not $CreatedRuntime) {
+        $PythonHostRoot = Join-Path $BuildRoot "python310-host"
+        $PythonHost = Join-Path $PythonHostRoot "python.exe"
+        if (-not (Test-Path $PythonHost)) {
+            $PythonInstaller = Join-Path $BuildRoot "python-3.10.11-amd64.exe"
+            Download-File "https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe" $PythonInstaller
+            $InstallerHash = (Get-FileHash -Algorithm SHA256 $PythonInstaller).Hash.ToLowerInvariant()
+            if ($InstallerHash -ne $PythonInstallerSha256) { throw "Python 3.10 installer checksum verification failed" }
+            $Install = Start-Process -FilePath $PythonInstaller -ArgumentList @(
+                "/quiet", "InstallAllUsers=0", "Include_launcher=0", "Include_test=0",
+                "PrependPath=0", "Shortcuts=0", "TargetDir=`"$PythonHostRoot`""
+            ) -Wait -PassThru
+            if ($Install.ExitCode -ne 0) { throw "Python 3.10 data-disk bootstrap failed with exit code $($Install.ExitCode)" }
+        }
+        Invoke-Checked { & $PythonHost -m venv (Join-Path $StageRoot "python") } "Python 3.10 data-disk runtime creation"
+    }
 }
 if (-not $SkipDependencies) {
     Invoke-Checked { & $RuntimePython -m pip install --upgrade pip wheel setuptools } "pip bootstrap"
@@ -85,8 +110,13 @@ Assert-FreeSpace $BuildRoot 10 "dependencies"
 
 if (-not $SkipDownloads) {
     $Base = if ($Source -eq "HF-Mirror") { "https://hf-mirror.com/XXXXRT/GPT-SoVITS-Pretrained/resolve/main" } else { "https://huggingface.co/XXXXRT/GPT-SoVITS-Pretrained/resolve/main" }
-    $ModelsZip = Join-Path $BuildRoot "pretrained_models.zip"
-    Download-File "$Base/pretrained_models.zip" $ModelsZip
+    if ($PretrainedModelsArchive) {
+        $ModelsZip = [IO.Path]::GetFullPath($PretrainedModelsArchive)
+        if (-not (Test-Path $ModelsZip -PathType Leaf)) { throw "Pretrained models archive does not exist: $ModelsZip" }
+    } else {
+        $ModelsZip = Join-Path $BuildRoot "pretrained_models.zip"
+        Download-File "$Base/pretrained_models.zip" $ModelsZip
+    }
     if (-not (Test-Path (Join-Path $UpstreamRoot "GPT_SoVITS\pretrained_models\sv"))) {
         Expand-Archive -Path $ModelsZip -DestinationPath (Join-Path $UpstreamRoot "GPT_SoVITS")
     }
@@ -103,6 +133,7 @@ $RequiredRuntimeFiles = @(
     "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large/config.json",
     "GPT_SoVITS/pretrained_models/sv",
     "GPT_SoVITS/pretrained_models/v2Pro",
+    "GPT_SoVITS/pretrained_models/fast_langdetect/lid.176.bin",
     "ffmpeg.exe",
     "LICENSE"
 )

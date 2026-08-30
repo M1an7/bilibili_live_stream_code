@@ -66,7 +66,11 @@ class PersonalizedSpeechService:
     def prepare(self, voice_key: str, preview_text: str = "") -> dict:
         voice_record, runtime_record = self._resolve(voice_key)
         self._load(voice_record, runtime_record)
-        stream = self.manager.synthesize((preview_text or self.PREVIEW_TEXT).strip(), language="ja")
+        stream = self.manager.synthesize(
+            (preview_text or self.PREVIEW_TEXT).strip(),
+            language="ja",
+            request_timeout=90.0,
+        )
         playback = self.player.play(stream, volume=1.0, capture=True)
         self._validate_non_silent(playback.pcm)
         updated = self.health_store.promote_ready(

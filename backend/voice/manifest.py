@@ -9,7 +9,8 @@ from typing import Any
 VOICE_ID_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 HASH_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 SUPPORTED_MODEL_VERSIONS = {"v2Pro", "v2ProPlus"}
-EXPECTED_ENGINE = "gpt-sovits-cpu"
+EXPECTED_ENGINE = "gpt-sovits-gpu"
+SUPPORTED_ENGINES = {EXPECTED_ENGINE, "gpt-sovits-cpu"}
 EXPECTED_ENGINE_API_VERSION = 1
 REQUIRED_USAGE = {"ai_training", "synthetic_speech", "public_livestream"}
 
@@ -71,7 +72,7 @@ class VoiceManifest:
             raise VoiceContractError("invalid_voice_id", "音色 ID 只能包含小写字母、数字和连字符", "voice_id")
 
         engine = _required_string(payload, "engine", "语音引擎")
-        if engine != EXPECTED_ENGINE or payload.get("engine_api_version") != EXPECTED_ENGINE_API_VERSION:
+        if engine not in SUPPORTED_ENGINES or payload.get("engine_api_version") != EXPECTED_ENGINE_API_VERSION:
             raise VoiceContractError("unsupported_engine", "音色引擎或接口版本不兼容", "engine")
 
         model_version = _required_string(payload, "model_version", "模型版本")

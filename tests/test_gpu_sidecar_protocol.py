@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import array
+import io
 import tempfile
 import threading
 import unittest
+import urllib.error
+from unittest.mock import patch
 from pathlib import Path
 
 from backend.runtime.client import SidecarClient, SidecarError
@@ -123,6 +126,15 @@ class GpuSidecarProtocolTests(unittest.TestCase):
         client.shutdown()
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
+
+    def test_client_closes_http_error_responses(self):
+        body = io.BytesIO(b'{"code":"bad_request","message":"bad"}')
+        error = urllib.error.HTTPError("http://127.0.0.1/", 400, "bad", {}, body)
+        client = SidecarClient("127.0.0.1", 1, "token")
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaises(SidecarError):
+                client.health()
+        self.assertTrue(body.closed)
 
 
 if __name__ == "__main__":

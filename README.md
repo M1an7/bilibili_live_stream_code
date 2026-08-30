@@ -74,6 +74,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_gpu_runtime.ps1 `
 D:\BiliLiveRuntimeBuild\artifacts\BiliLiveTool-GPT-SoVITS-CU126-<version>.zip
 ```
 
+如果系统没有 Python 3.10，脚本会校验并安装固定的 Python 3.10.11 到 `BuildRoot`，不会修改系统 Python 或 PATH。已有 `pretrained_models.zip` 时可通过 `-PretrainedModelsArchive` 复用数据盘上的归档，避免重复下载。
+
+3060 Laptop 6GB 的真实测试中，音色冷加载约 100 秒，热态短弹幕首包约 1.04 秒、整句约 1.24 秒，运行时报告峰值显存约 1.7GB；关闭个性化语音后侧车退出。完整记录见 [`docs/gpu-runtime-benchmark.md`](docs/gpu-runtime-benchmark.md)。
+
 发布包必须使用 Ed25519 私钥签名，私钥不得提交到 Git。仅本机开发验证时可用 `-AllowUnsignedDevelopment`，同时以环境变量 `BILILIVE_ALLOW_UNSIGNED_RUNTIME=1` 启动源码版应用。桌面界面第 4 步可以选择运行时 ZIP、已解压目录以及运行时数据盘位置。
 
 运行时安装后，个性化语音的工作顺序为：启动侧车 → 加载音色 → 生成日语试听 → 校验并保存试听 → 开始按弹幕队列播报。CUDA 或显存错误会直接显示，不会回退到其他音色。
