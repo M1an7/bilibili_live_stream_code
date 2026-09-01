@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 import sys
 import types
@@ -130,6 +131,45 @@ class SpeechApiRoutingTests(unittest.TestCase):
         self.assertEqual(1, self.api.speech_service.stopped)
         self.assertEqual(1, self.api.personalized_speech.stopped)
         self.assertEqual(1, self.api.aivmx_speech.stopped)
+
+    def test_application_shutdown_is_idempotent_and_releases_both_voice_runtimes(self):
+        class Jobs:
+            def __init__(self):
+                self.closed = 0
+
+            def shutdown(self):
+                self.closed += 1
+
+        class Config:
+            def __init__(self):
+                self.saved = 0
+
+            def save(self):
+                self.saved += 1
+
+        self.api.session_state = types.SimpleNamespace(is_live=False)
+        self.api.loop = None
+        self.api.config_manager = Config()
+        self.api.voice_jobs = Jobs()
+        self.api.runtime_jobs = Jobs()
+        self.api.aivmx_jobs = Jobs()
+        self.api.cpu_runtime_jobs = Jobs()
+        self.api._shutdown_lock = threading.Lock()
+        self.api._shutdown_complete = False
+
+        shutdown = getattr(self.api, "shutdown", None)
+        self.assertIsNotNone(shutdown, "application shutdown entry point is not implemented")
+        shutdown()
+        shutdown()
+
+        self.assertEqual(1, self.api.speech_service.stopped)
+        self.assertEqual(1, self.api.personalized_speech.closed)
+        self.assertEqual(1, self.api.aivmx_speech.closed)
+        self.assertEqual(1, self.api.voice_jobs.closed)
+        self.assertEqual(1, self.api.runtime_jobs.closed)
+        self.assertEqual(1, self.api.aivmx_jobs.closed)
+        self.assertEqual(1, self.api.cpu_runtime_jobs.closed)
+        self.assertEqual(1, self.api.config_manager.saved)
 
     def test_runtime_root_reconfigure_keeps_non_runtime_voice_build_jobs_alive(self):
         class Jobs:

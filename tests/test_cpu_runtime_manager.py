@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from backend.cpu_runtime.manager import CpuRuntimeManager
 from backend.cpu_runtime.manifest import CpuRuntimeManifest
@@ -81,6 +84,61 @@ class CpuRuntimeManagerTests(unittest.TestCase):
         manager.shutdown()
         self.assertEqual("stopped", manager.status()["state"])
         self.assertIsNotNone(process.poll())
+
+    def test_windows_sidecar_process_has_no_visible_console(self):
+        captured_options = {}
+
+        class FakeProcess:
+            def __init__(self, command, **options):
+                self.args = command
+                self.stdin = io.BytesIO()
+                self.pid = 43123
+                self.returncode = None
+                captured_options.update(options)
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                self.returncode = 0
+                return self.returncode
+
+        class ReadyClient:
+            def __init__(self, host, port, token):
+                pass
+
+            def health(self, timeout=None):
+                return {
+                    "status": "ready",
+                    "providers": ["CPUExecutionProvider"],
+                    "vram_mb": 0,
+                }
+
+            def shutdown(self):
+                pass
+
+        manager = CpuRuntimeManager(
+            self.root / "windows-logs",
+            self.root / "windows-aivmx-voices",
+            command_builder=lambda *_args: ["python.exe", "sidecar.py"],
+            client_factory=ReadyClient,
+        )
+        self.managers.append(manager)
+
+        with (
+            mock.patch("backend.cpu_runtime.manager.os.name", "nt"),
+            mock.patch("backend.cpu_runtime.manager._free_loopback_port", return_value=43123),
+            mock.patch.object(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, create=True),
+            mock.patch.object(subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True),
+            mock.patch.object(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x00004000, create=True),
+            mock.patch("backend.cpu_runtime.manager.subprocess.Popen", side_effect=FakeProcess),
+        ):
+            self.assertEqual("ready", manager.prepare(self.record)["state"])
+            manager.shutdown()
+
+        flags = captured_options["creationflags"]
+        self.assertEqual(0x08000000, flags & 0x08000000)
+        self.assertEqual(0x00000200, flags & 0x00000200)
 
     def test_forces_zero_gpu_offline_and_hard_thread_limits(self):
         manager = self.manager()

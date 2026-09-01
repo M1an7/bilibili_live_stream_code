@@ -161,7 +161,11 @@ class CpuRuntimeManager:
             }
             if os.name == "nt":
                 below_normal = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0x00004000)
-                options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | below_normal
+                options["creationflags"] = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    | subprocess.CREATE_NO_WINDOW
+                    | below_normal
+                )
             else:
                 options["start_new_session"] = True
                 options["preexec_fn"] = lambda: os.nice(5)

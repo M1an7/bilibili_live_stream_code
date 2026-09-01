@@ -74,6 +74,8 @@ class FrontendLogHandler(logging.Handler):
 
 class ApiService:
     def __init__(self):
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_complete = False
         self.api_client = BilibiliApi()
         self.config_manager = Config()
         self.session_state = SessionState()
@@ -182,6 +184,37 @@ class ApiService:
                 except Exception:
                     logger.exception("Failed to shut down %s", name)
 
+    def shutdown(self):
+        with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+            self._shutdown_complete = True
+
+        def cleanup_step(name, callback):
+            try:
+                callback()
+            except Exception:
+                logger.exception("Failed to shut down %s", name)
+
+        if getattr(getattr(self, "session_state", None), "is_live", False):
+            cleanup_step("live service", self.live_service.stop_live)
+
+        loop = getattr(self, "loop", None)
+        if loop and loop.is_running():
+            cleanup_step(
+                "danmu service",
+                lambda: asyncio.run_coroutine_threadsafe(self.danmu_service.stop(), loop),
+            )
+
+        speech_service = getattr(self, "speech_service", None)
+        if speech_service:
+            cleanup_step("system speech", speech_service.stop)
+        cleanup_step("voice services", self._shutdown_voice_services)
+
+        config_manager = getattr(self, "config_manager", None)
+        if config_manager:
+            cleanup_step("configuration", config_manager.save)
+
     def _start_loop(self, loop):
         asyncio.set_event_loop(loop)
         loop.run_forever()
@@ -209,13 +242,8 @@ class ApiService:
                 self.window_service.window_min()
             return True
 
-        # 只有在直播状态下才尝试停止直播
-        if self.session_state.is_live:
-            self.live_service.stop_live()
-
-        asyncio.run_coroutine_threadsafe(self.danmu_service.stop(), self.loop)
-        self._shutdown_voice_services()
-        return self.window_service.window_close(lambda: self.config_manager.save())
+        self.shutdown()
+        return self.window_service.window_close()
     def get_window_position(self): return self.window_service.get_window_position()
     def window_drag(self, target_x, target_y): return self.window_service.window_drag(target_x, target_y)
 

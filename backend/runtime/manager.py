@@ -131,7 +131,10 @@ class GpuRuntimeManager:
                 "stderr": subprocess.STDOUT,
             }
             if os.name == "nt":
-                options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                options["creationflags"] = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    | subprocess.CREATE_NO_WINDOW
+                )
             else:
                 options["start_new_session"] = True
             try:

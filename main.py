@@ -134,6 +134,18 @@ def _get_primary_monitor_scale_win():
         return 1.0
 
 if __name__ == '__main__':
+    single_instance = None
+    if sys.platform == 'win32':
+        try:
+            from backend.single_instance import WindowsSingleInstance
+
+            single_instance = WindowsSingleInstance()
+            if not single_instance.acquire():
+                raise SystemExit(0)
+        except OSError:
+            logger.exception("Windows single-instance guard could not be initialized")
+            single_instance = None
+
     api = ApiService()
     html_path = get_html_path()
     logger.info(
@@ -225,32 +237,9 @@ if __name__ == '__main__':
 
     # --- 全局清理逻辑 ---
     def cleanup_services(api_service):
-        """执行清理工作：停止直播、停止弹幕、保存配置"""
-        try:
-            # 1. 停止直播
-            if api_service.session_state.is_live:
-                api_service.live_service.stop_live()
-            
-            # 2. 停止弹幕
-            import asyncio
-            if api_service.loop:
-                 asyncio.run_coroutine_threadsafe(api_service.danmu_service.stop(), api_service.loop)
-
-            # 3. 停止本机语音播报
-            api_service.speech_service.stop()
-
-            # 4. 取消并回收音色导入后台任务
-            api_service.voice_jobs.shutdown()
-
-            # 5. 停止 GPU 语音播放、侧车进程与运行时安装任务
-            api_service.personalized_speech.shutdown()
-            api_service.runtime_jobs.shutdown()
-
-            # 6. 保存配置
-            api_service.config_manager.save()
-            print("Services cleaned up.")
-        except Exception as e:
-            print(f"Cleanup failed: {e}")
+        """执行幂等的应用级清理。"""
+        api_service.shutdown()
+        print("Services cleaned up.")
 
     # --- 全局标志 ---
     import threading
@@ -525,6 +514,9 @@ if __name__ == '__main__':
             center_and_show_window(window_obj)
         else:
             center_and_show_window(window) # Fallback to global if None passed
+
+        if single_instance:
+            single_instance.start_activation_listener(tray_show_window)
             
         if sys.platform != 'win32':
              # 允许通过环境变量禁用托盘，方便排查崩溃问题
@@ -547,4 +539,9 @@ if __name__ == '__main__':
     # [Fix] 强制 Linux 使用 Qt 后端，确保与 QSystemTrayIcon 兼容
     # Windows 保持默认 (Edge/CEF)
     gui_backend = 'qt' if sys.platform != 'win32' else None
-    webview.start(on_app_start, window, gui=gui_backend)
+    try:
+        webview.start(on_app_start, window, gui=gui_backend)
+    finally:
+        cleanup_services(api)
+        if single_instance:
+            single_instance.close()
