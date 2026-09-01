@@ -1,16 +1,20 @@
 <script setup>
 import { nextTick, onUnmounted, reactive, ref, watch } from 'vue';
+import AivmxImportPanel from './AivmxImportPanel.vue';
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
   bridge: { type: Object, required: true },
 });
 
-const emit = defineEmits(['close', 'installed']);
+const emit = defineEmits(['close', 'installed', 'refresh-voices']);
 const step = ref(1);
+const mode = ref('cpu');
 const error = ref('');
 const previousFocus = ref(null);
 const closeButton = ref(null);
+const installedPacks = ref([]);
+const preparingVoiceId = ref('');
 const form = reactive({
   gptPath: '',
   sovitsPath: '',
@@ -47,6 +51,7 @@ let runtimePollTimer = null;
 
 const reset = () => {
   step.value = 1;
+  mode.value = 'cpu';
   error.value = '';
   Object.assign(form, {
     gptPath: '',
@@ -78,15 +83,26 @@ const refreshRuntimeStatus = async () => {
   runtime.root = response.data?.runtime_root || runtime.root;
 };
 
+const refreshInstalledPacks = async () => {
+  if (typeof props.bridge.listVoicePacks !== 'function') {
+    installedPacks.value = [];
+    return;
+  }
+  const response = await props.bridge.listVoicePacks();
+  installedPacks.value = response?.code === 0 && Array.isArray(response.data)
+    ? response.data.filter(pack => pack?.health !== 'invalid')
+    : [];
+};
+
 watch(() => props.visible, async (visible) => {
   if (visible) {
     previousFocus.value = document.activeElement;
     reset();
-    await refreshRuntimeStatus();
+    await Promise.all([refreshRuntimeStatus(), refreshInstalledPacks()]);
     await nextTick();
     closeButton.value?.focus();
   }
-});
+}, { immediate: true });
 
 const hasExtension = (path, extension) => String(path).toLowerCase().endsWith(extension);
 
@@ -233,7 +249,7 @@ const prepareImportedVoice = async () => {
   error.value = '';
   runtime.status = 'preparing';
   runtime.message = '正在启动 GPU、加载音色并生成试听';
-  const response = await props.bridge.prepareVoice(`pack:${form.voiceId}`);
+  const response = await props.bridge.previewVoice(`pack:${form.voiceId}`);
   if (response?.code !== 0) {
     runtime.status = 'failed';
     error.value = response?.msg || 'GPU 音色准备失败';
@@ -244,6 +260,31 @@ const prepareImportedVoice = async () => {
   runtime.message = '音色已通过真实 GPU 合成验证，可以用于弹幕播报';
   runtime.metrics = response.data?.runtime?.metrics || null;
   emit('installed', { voice_id: form.voiceId, health: 'ready' });
+};
+
+const prepareExistingVoice = async (pack) => {
+  error.value = '';
+  preparingVoiceId.value = pack.voice_id;
+  runtime.status = 'preparing';
+  runtime.message = `正在启动 GPU、加载“${pack.display_name}”并生成试听`;
+  try {
+    const response = await props.bridge.previewVoice(pack.voice_key);
+    if (response?.code !== 0) {
+      runtime.status = 'failed';
+      error.value = response?.msg || 'GPU 音色准备失败';
+      return;
+    }
+    pack.health = 'ready';
+    pack.selectable = true;
+    pack.message = '已通过真实 GPU 合成验证';
+    runtime.status = 'ready';
+    runtime.state = 'ready';
+    runtime.message = '音色已通过真实 GPU 合成验证，可以用于弹幕播报';
+    runtime.metrics = response.data?.runtime?.metrics || null;
+    emit('installed', { voice_id: pack.voice_id, health: 'ready' });
+  } finally {
+    preparingVoiceId.value = '';
+  }
 };
 
 const submit = async () => {
@@ -296,12 +337,17 @@ onUnmounted(() => {
       <header class="modal-header">
         <div>
           <span class="eyebrow">个性化音色</span>
-          <h2 id="voice-import-title">从 GPT-SoVITS 训练结果创建</h2>
+          <h2 id="voice-import-title">{{ mode === 'cpu' ? '导入 AIVMX 实时音色' : '从 GPT-SoVITS 训练结果创建' }}</h2>
         </div>
         <button ref="closeButton" class="icon-button" type="button" aria-label="关闭" @click="close">×</button>
       </header>
 
-      <ol class="stepper" aria-label="导入进度">
+      <nav class="mode-tabs" aria-label="个性化音色类型">
+        <button data-test="voice-mode-cpu" type="button" :class="{ active: mode === 'cpu' }" @click="mode = 'cpu'">实时 CPU 音色</button>
+        <button data-test="voice-mode-gpu" type="button" :class="{ active: mode === 'gpu' }" @click="mode = 'gpu'">高质量 GPU 音色</button>
+      </nav>
+
+      <ol v-if="mode === 'gpu'" class="stepper" aria-label="导入进度">
         <li v-for="item in 4" :key="item" :class="{ active: step === item, done: step > item }">
           <span>{{ step > item ? '✓' : item }}</span>
           {{ ['模型文件', '参考音频', '音色信息', '校验安装'][item - 1] }}
@@ -309,6 +355,33 @@ onUnmounted(() => {
       </ol>
 
       <div class="modal-body">
+        <AivmxImportPanel
+          v-if="mode === 'cpu'"
+          :bridge="bridge"
+          @installed="emit('installed', $event)"
+          @refresh-voices="emit('refresh-voices', $event)"
+        />
+        <template v-else>
+        <section v-if="installedPacks.length" class="installed-packs" data-test="installed-packs">
+          <div class="installed-packs-title">
+            <div><strong>已安装音色</strong><span>重启后也可以在这里完成 GPU 试听与启用</span></div>
+          </div>
+          <article v-for="pack in installedPacks" :key="pack.voice_id" class="installed-pack">
+            <div>
+              <strong>{{ pack.display_name }}</strong>
+              <span>{{ pack.message || pack.health }}</span>
+            </div>
+            <button
+              class="primary"
+              type="button"
+              :data-test="`prepare-existing-${pack.voice_id}`"
+              :disabled="preparingVoiceId === pack.voice_id"
+              @click="prepareExistingVoice(pack)"
+            >
+              {{ pack.health === 'ready' ? '重新试听' : 'GPU 试听并启用' }}
+            </button>
+          </article>
+        </section>
         <div v-if="step === 1" class="form-step">
           <p class="step-intro">选择训练完成后的两个权重文件。权重只会作为不透明文件复制和校验，不会由主程序直接加载。</p>
           <label>GPT 权重（.ckpt）</label>
@@ -380,7 +453,7 @@ onUnmounted(() => {
 
           <section class="runtime-panel" data-test="runtime-panel">
             <div class="runtime-title">
-              <div><strong>独立 GPU 运行时</strong><span>CUDA 12.6 · FP16 · RTX 3060</span></div>
+              <div><strong>独立 GPU 运行时</strong><span>CUDA 12.6 · FP16 · NVIDIA 6GB+</span></div>
               <span class="runtime-state" :class="`runtime-${runtime.state}`">{{ runtime.state === 'ready' ? '已安装' : '待安装' }}</span>
             </div>
             <p>运行时单独放在数据盘，不打进桌面 EXE；只有使用个性化音色时才占用显存。</p>
@@ -388,7 +461,7 @@ onUnmounted(() => {
               <span>数据目录：{{ runtime.root || '应用数据目录 / runtimes' }}</span>
               <button type="button" @click="chooseRuntimeRoot">更换数据盘</button>
             </div>
-            <div class="file-row">
+            <div class="file-row runtime-source-row">
               <input v-model.trim="runtime.sourcePath" data-test="runtime-path" type="text" placeholder="选择 GPU 运行时 .zip 或解压目录">
               <button data-test="pick-runtime-zip" type="button" @click="chooseRuntime('zip')">ZIP</button>
               <button data-test="pick-runtime-directory" type="button" @click="chooseRuntime('directory')">目录</button>
@@ -409,9 +482,10 @@ onUnmounted(() => {
         </div>
 
         <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+        </template>
       </div>
 
-      <footer class="modal-actions">
+      <footer v-if="mode === 'gpu'" class="modal-actions">
         <button v-if="step > 1 && job.status !== 'running' && job.status !== 'queued'" class="secondary" type="button" @click="previousStep">上一步</button>
         <span class="action-spacer"></span>
         <button v-if="step < 4" data-test="wizard-next" class="primary" type="button" @click="nextStep">下一步</button>
@@ -430,12 +504,19 @@ onUnmounted(() => {
 .eyebrow { color: #008fc4; font-size: 11px; font-weight: 700; letter-spacing: .08em; }
 h2 { margin: 4px 0 0; color: #0f172a; font-size: 19px; }
 .icon-button { width: 31px; height: 31px; border: 0; border-radius: 9px; background: #f1f5f9; color: #64748b; font-size: 22px; cursor: pointer; }
+.mode-tabs { display: flex; gap: 7px; padding: 0 24px 14px; }.mode-tabs button { flex: 1; min-height: 36px; border: 1px solid #dbe8ef; border-radius: 10px; background: #f8fafc; color: #64748b; cursor: pointer; font: inherit; font-size: 12px; font-weight: 650; }.mode-tabs button.active { border-color: #73cde9; background: #eaf8fd; color: #008fc4; box-shadow: inset 0 0 0 1px rgba(0, 174, 236, .08); }
 .stepper { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 0; padding: 0 24px 15px; list-style: none; }
 .stepper li { display: flex; align-items: center; gap: 6px; color: #94a3b8; font-size: 11px; white-space: nowrap; }
 .stepper li span { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: #e9eff5; color: #64748b; font-weight: 700; }
 .stepper li.active, .stepper li.done { color: #008fc4; }
 .stepper li.active span, .stepper li.done span { background: #00aeec; color: #fff; }
 .modal-body { min-height: 300px; overflow: auto; padding: 20px 24px; border-block: 1px solid #e8eef4; background: #f8fbfd; }
+.installed-packs { display: flex; flex-direction: column; gap: 9px; margin-bottom: 16px; padding: 13px; border: 1px solid #d9e8f1; border-radius: 12px; background: #fff; }
+.installed-packs-title > div, .installed-pack > div { display: flex; flex-direction: column; gap: 3px; }
+.installed-packs-title strong, .installed-pack strong { color: #1e293b; font-size: 12px; }
+.installed-packs-title span, .installed-pack span { color: #64748b; font-size: 11px; }
+.installed-pack { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 9px; border-top: 1px solid #edf2f6; }
+.installed-pack .primary { height: 33px; flex-shrink: 0; }
 .form-step { display: flex; flex-direction: column; gap: 9px; }
 .step-intro { margin: 0 0 4px; color: #64748b; font-size: 12px; line-height: 1.55; }
 label { color: #334155; font-size: 12px; font-weight: 650; }
@@ -444,6 +525,7 @@ input[type="text"], select { height: 37px; padding: 0 11px; }
 textarea { resize: vertical; padding: 10px 11px; line-height: 1.5; }
 input:focus, textarea:focus, select:focus { border-color: #00aeec; box-shadow: 0 0 0 3px rgba(0, 174, 236, .1); }
 .file-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.runtime-source-row { grid-template-columns: minmax(0, 1fr) auto auto; }
 .file-row button, .primary, .secondary { border: 0; border-radius: 9px; padding: 0 15px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 650; }
 .file-row button, .secondary { background: #e8f5fb; color: #008fc4; }
 .two-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

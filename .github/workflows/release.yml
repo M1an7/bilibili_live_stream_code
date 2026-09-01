@@ -57,7 +57,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
+        python-version: '3.12'
 
     - name: Set up Node.js
       uses: actions/setup-node@v4
@@ -202,8 +202,11 @@ jobs:
         if [ "${{ matrix.os }}" == "windows-latest" ]; then
           EXE_NAME="BiliLiveTool.exe"
           ASSET_NAME="BiliLiveTool-${VERSION}-${{ matrix.asset_name_suffix }}.zip"
-          mv dist/$EXE_NAME .
-          7z a $ASSET_NAME $EXE_NAME
+          PACKAGE_DIR="BiliLiveTool-${VERSION}-${{ matrix.asset_name_suffix }}"
+          mkdir "$PACKAGE_DIR"
+          mv "dist/$EXE_NAME" "$PACKAGE_DIR/"
+          cp WINDOWS-README.txt "$PACKAGE_DIR/README-Windows.txt"
+          7z a "$ASSET_NAME" "$PACKAGE_DIR"
         elif [ "${{ matrix.os }}" == "macos-latest" ]; then
           APP_NAME="BiliLiveTool.app"
           ASSET_NAME="BiliLiveTool-${VERSION}-${{ matrix.asset_name_suffix }}.zip"
@@ -331,6 +334,8 @@ jobs:
           - **Windows**: 下载 `.zip` 解压即用
           - **macOS**: 下载 `.zip` 解压运行
           - **Linux**: 下载 `.tar.gz` 解压使用
+
+          > **Windows 解压提示**：请保留压缩包中的顶层文件夹，并将整个文件夹解压到独立、可写的位置后运行。程序会在 EXE 同目录生成 `logs/`、`config.json` 等本地文件；配置文件可能包含账号登录信息，请勿分享整个运行目录。
 
           ### 🛡️ Windows 用户安全提示
           如果您在 Windows 上运行遇到 **"Windows 已保护你的电脑"** (SmartScreen) 蓝框提示：

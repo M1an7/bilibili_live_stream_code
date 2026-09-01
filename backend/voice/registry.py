@@ -49,6 +49,7 @@ class VoicePackRegistry:
         self.paths = paths.ensure()
         self.validator = validator
         self.health_store = VoiceHealthStore(paths)
+        self.runtime_registry = None
         self._lock = threading.RLock()
         self._records: dict[str, VoicePackRecord] = {}
         self.refresh()
@@ -60,7 +61,11 @@ class VoicePackRegistry:
             manifest = validation.manifest
             if not manifest or manifest.voice_id != voice_id:
                 raise VoiceContractError("voice_id_mismatch", "目录名与音色 ID 不一致")
-            health = self.health_store.get(manifest)
+            runtime = self.runtime_registry.find_compatible(manifest.model_version, "ja") if self.runtime_registry else None
+            if self.runtime_registry and runtime is None:
+                health = {"health": "runtime_required", "message": "音色已导入，等待兼容的 GPU 运行时"}
+            else:
+                health = self.health_store.get(manifest, runtime)
             return VoicePackRecord(
                 voice_id=voice_id,
                 display_name=manifest.display_name,
@@ -86,6 +91,10 @@ class VoicePackRegistry:
                     records[entry.name] = self._record_from_directory(entry)
             self._records = records
             return list(records.values())
+
+    def set_runtime_registry(self, runtime_registry) -> list[VoicePackRecord]:
+        self.runtime_registry = runtime_registry
+        return self.refresh()
 
     def install_staged(self, built: BuiltVoicePack) -> VoicePackRecord:
         staging = Path(built.staging_path)

@@ -11,7 +11,9 @@ from typing import Mapping
 class VoiceStoragePaths:
     root: Path
     voices: Path
+    aivmx_voices: Path
     runtimes: Path
+    cpu_runtimes: Path
     speech_cache: Path
     staging: Path
     logs: Path
@@ -45,7 +47,9 @@ class VoiceStoragePaths:
         return cls(
             root=root,
             voices=root / "voices",
+            aivmx_voices=root / "aivmx-voices",
             runtimes=runtime_root,
+            cpu_runtimes=runtime_root / ".cpu",
             speech_cache=root / "cache" / "speech",
             staging=root / "staging",
             logs=root / "logs",
@@ -53,6 +57,6 @@ class VoiceStoragePaths:
         )
 
     def ensure(self) -> "VoiceStoragePaths":
-        for path in (self.voices, self.runtimes, self.speech_cache, self.staging, self.logs, self.voice_state):
+        for path in (self.voices, self.aivmx_voices, self.runtimes, self.cpu_runtimes, self.speech_cache, self.staging, self.logs, self.voice_state):
             path.mkdir(parents=True, exist_ok=True)
         return self

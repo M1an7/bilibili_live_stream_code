@@ -45,6 +45,8 @@ class VoiceHealthStore:
         try:
             state = json.loads(state_path.read_text("utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
+            if runtime_record is not None:
+                return {"health": "runtime_required", "message": "兼容 GPU 运行时已就绪，等待 GPU 试听验证"}
             return {"health": "runtime_required", "message": "音色已导入，等待 GPU 运行时准备与试听"}
         if state.get("voice_digest") != voice_digest(manifest):
             return {"health": "runtime_required", "message": "音色文件已变化，需要重新进行 GPU 试听验证"}

@@ -1,0 +1,14 @@
+diff --git a/style_gen.py b/style_gen.py
+index dc312c4..2e2c24f 100644
+--- a/style_gen.py
++++ b/style_gen.py
+@@ -4,6 +4,10 @@ from typing import Any
+ import numpy as np
+ import torch
+ from numpy.typing import NDArray
++
++from sbv2_torchaudio_compat import install_torchaudio_compat
++
++install_torchaudio_compat()
+ from pyannote.audio import Inference, Model
+ from tqdm import tqdm

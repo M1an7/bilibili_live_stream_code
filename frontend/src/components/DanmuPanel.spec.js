@@ -29,7 +29,8 @@ const mocks = vi.hoisted(() => {
       }),
       refreshVoices: vi.fn(),
       refreshVoicePacks: vi.fn(),
-      setEnabled: vi.fn(),
+      refreshAivmxVoices: vi.fn().mockResolvedValue([]),
+      setEnabled: vi.fn().mockResolvedValue(true),
       setVoice: vi.fn(),
       setRate: vi.fn(),
       setVolume: vi.fn(),
@@ -99,6 +100,22 @@ describe('DanmuPanel speech integration', () => {
     await nextTick();
 
     expect(wrapper.findComponent(VoiceImportModal).props('visible')).toBe(true);
-    expect(wrapper.text()).toContain('从 GPT-SoVITS 训练结果创建');
+    expect(wrapper.text()).toContain('导入 AIVMX 实时音色');
+    expect(wrapper.find('[data-test="voice-mode-cpu"]').classes()).toContain('active');
+  });
+
+  it('refreshes a successfully previewed realtime voice without selecting or enabling it', async () => {
+    const wrapper = mount(Host);
+    await nextTick();
+    wrapper.findComponent(SpeechToolbar).vm.$emit('import-voice');
+    await nextTick();
+
+    const modal = wrapper.findComponent(VoiceImportModal);
+    modal.vm.$emit('refresh-voices', { voice_key: 'aivmx:11111111-2222-4333-8444-555555555555:0' });
+    await vi.waitFor(() => expect(mocks.speechService.refreshAivmxVoices).toHaveBeenCalled());
+
+    expect(mocks.speechService.setVoice).not.toHaveBeenCalled();
+    expect(mocks.speechService.setEnabled).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(modal.props('visible')).toBe(false));
   });
 });

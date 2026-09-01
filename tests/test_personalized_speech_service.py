@@ -158,13 +158,12 @@ class PersonalizedSpeechTests(unittest.TestCase):
             self.player.play(Stream([tone(10)]), token=cancelled)
         self.assertEqual("cancelled", caught.exception.code)
 
-    def test_prepare_loads_absolute_pack_paths_and_promotes_real_preview(self):
+    def test_prepare_loads_only_the_validated_voice_id_and_promotes_real_preview(self):
         service, manager = self.service()
         result = service.prepare("pack:haibara-jp")
         self.assertEqual("ready", result["health"])
         request = manager.loaded[0]
-        self.assertEqual("ja", request["prompt_language"])
-        self.assertTrue(Path(request["gpt_path"]).is_absolute())
+        self.assertEqual({"voice_id": "haibara-jp"}, request)
         self.assertTrue((self.paths.voices / "haibara-jp" / "preview.wav").is_file())
         self.assertEqual(90.0, manager.spoken[0][2]["request_timeout"])
         manifest = json.loads((self.paths.voices / "haibara-jp" / "manifest.json").read_text("utf-8"))
@@ -174,12 +173,20 @@ class PersonalizedSpeechTests(unittest.TestCase):
         self.assertTrue(self.registry.get("haibara-jp").selectable)
 
     def test_silent_preview_is_rejected_and_never_marked_ready(self):
-        service, _manager = self.service(b"\x00\x00" * 3200)
+        service, manager = self.service(b"\x00\x00" * 3200)
         with self.assertRaises(SidecarError) as caught:
             service.prepare("pack:haibara-jp")
         self.assertEqual("silent_audio", caught.exception.code)
+        self.assertTrue(manager.closed)
         self.registry.refresh()
         self.assertEqual("runtime_required", self.registry.get("haibara-jp").health)
+
+    def test_transient_preview_promotes_health_then_releases_the_gpu(self):
+        service, manager = self.service()
+        result = service.preview("pack:haibara-jp", "テスト")
+        self.assertEqual("ready", result["health"])
+        self.assertTrue(manager.closed)
+        self.assertEqual("", service.active_voice_key)
 
     def test_health_is_invalidated_when_voice_manifest_changes(self):
         service, _manager = self.service()
@@ -200,6 +207,41 @@ class PersonalizedSpeechTests(unittest.TestCase):
         self.assertGreater(manager.cancelled, 0)
         service.shutdown()
         self.assertTrue(manager.closed)
+
+    def test_speak_rejects_a_pack_that_has_not_passed_this_runtime_preview(self):
+        service, manager = self.service()
+        with self.assertRaises(SidecarError) as caught:
+            service.speak("テスト", "pack:haibara-jp")
+        self.assertEqual("voice_not_ready", caught.exception.code)
+        self.assertEqual([], manager.loaded)
+
+    def test_runtime_change_invalidates_a_prepared_voice_before_reload(self):
+        service, manager = self.service()
+        service.prepare("pack:haibara-jp")
+        service.shutdown()
+        service.runtime_registry.record = SimpleNamespace(
+            runtime_id="replacement-cu126",
+            manifest=SimpleNamespace(build_version="changed"),
+            path=self.root / "replacement-runtime",
+        )
+        with self.assertRaises(SidecarError) as caught:
+            service.speak("テスト", "pack:haibara-jp")
+        self.assertEqual("voice_not_ready", caught.exception.code)
+
+    def test_registry_hides_ready_pack_when_its_runtime_is_removed(self):
+        service, _manager = self.service()
+        service.prepare("pack:haibara-jp")
+        self.registry.set_runtime_registry(FakeRuntimeRegistry(self.runtime))
+        self.assertTrue(self.registry.get("haibara-jp").selectable)
+        self.registry.set_runtime_registry(FakeRuntimeRegistry(None))
+        self.assertEqual("runtime_required", self.registry.get("haibara-jp").health)
+        self.assertFalse(self.registry.get("haibara-jp").selectable)
+
+    def test_unpreviewed_pack_distinguishes_a_compatible_runtime_from_a_missing_one(self):
+        self.registry.set_runtime_registry(FakeRuntimeRegistry(self.runtime))
+        record = self.registry.get("haibara-jp")
+        self.assertEqual("runtime_required", record.health)
+        self.assertEqual("兼容 GPU 运行时已就绪，等待 GPU 试听验证", record.message)
 
 
 if __name__ == "__main__":

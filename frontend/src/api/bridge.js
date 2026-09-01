@@ -227,6 +227,41 @@ export const useBridge = () => {
       return await callPy('list_voice_packs');
     },
 
+    // AIVMX 实时 CPU 音色
+    async inspectAivmx(path) {
+      return await callPy('inspect_aivmx', path);
+    },
+    async startAivmxInstall(request) {
+      return await callPy('start_aivmx_install', request);
+    },
+    async getAivmxJob(jobId) {
+      return await callPy('get_aivmx_job', jobId);
+    },
+    async listAivmxVoices() {
+      return await callPy('list_aivmx_voices');
+    },
+    async chooseCpuRuntimeSource(kind) {
+      return await callPy('choose_cpu_runtime_source', kind);
+    },
+    async startCpuRuntimeInstall(request) {
+      return await callPy('start_cpu_runtime_install', request);
+    },
+    async getCpuRuntimeJob(jobId) {
+      return await callPy('get_cpu_runtime_job', jobId);
+    },
+    async getCpuRuntimeStatus() {
+      return await callPy('get_cpu_runtime_status');
+    },
+    async prepareAivmxVoice(voiceKey) {
+      return await callPy('prepare_aivmx_voice', voiceKey);
+    },
+    async previewAivmxVoice(voiceKey, text = '') {
+      return await callPy('preview_aivmx_voice', voiceKey, text);
+    },
+    async releaseAivmxVoice() {
+      return await callPy('release_aivmx_voice');
+    },
+
     // 独立 GPU 运行时与个性化音色准备
     async chooseRuntimeSource(kind) {
       return await callPy('choose_runtime_source', kind);

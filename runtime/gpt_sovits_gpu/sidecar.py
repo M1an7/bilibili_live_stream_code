@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import struct
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +17,11 @@ except ImportError:
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
+FRAME_METADATA = 1
+FRAME_PCM = 2
+FRAME_ERROR = 3
+FRAME_END = 4
+FRAME_HEADER = struct.Struct(">BI")
 
 
 def _json_bytes(payload: dict) -> bytes:
@@ -85,18 +92,20 @@ def create_server(host: str, port: int, token: str, engine: GpuVoiceEngine) -> T
                 elif self.path == "/v1/tts":
                     self._tts(payload)
                 elif self.path == "/v1/cancel":
-                    engine.cancel()
-                    self._send(200, {"status": "cancelled"})
+                    if set(payload) != {"request_id"} or not isinstance(payload.get("request_id"), str):
+                        raise ProtocolError("invalid_request_id", "取消请求标识无效")
+                    cancelled = engine.cancel(payload["request_id"])
+                    self._send(200, {"status": "cancelled" if cancelled else "not_active"})
                 elif self.path == "/v1/shutdown":
                     self._send(200, {"status": "stopping"})
-                    engine.cancel()
+                    engine.cancel(None)
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
                 else:
                     self._send(404, {"code": "not_found", "message": "接口不存在"})
             except ProtocolError as exc:
                 self._send(exc.status, {"code": exc.code, "message": exc.message})
             except (BrokenPipeError, ConnectionResetError):
-                engine.cancel()
+                engine.cancel(None)
             except Exception:
                 self._send(500, {"code": "internal_error", "message": "GPU 侧车内部错误"})
 
@@ -110,20 +119,36 @@ def create_server(host: str, port: int, token: str, engine: GpuVoiceEngine) -> T
             first_pcm_ms = round((time.perf_counter() - started) * 1000)
             engine.metrics["first_pcm_ms"] = first_pcm_ms
             self.send_response(200)
-            self.send_header("Content-Type", "audio/L16")
+            self.send_header("Content-Type", "application/x-bililive-pcm-stream")
             self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Sample-Rate", str(sample_rate))
-            self.send_header("X-Channels", "1")
-            self.send_header("X-Sample-Width", "2")
-            self.send_header("X-First-Pcm-Ms", str(first_pcm_ms))
             self.end_headers()
-            self.wfile.write(first)
+            metadata = _json_bytes({
+                "request_id": payload["request_id"],
+                "sample_rate": sample_rate,
+                "channels": 1,
+                "sample_width": 2,
+                "first_pcm_ms": first_pcm_ms,
+            })
+            self._frame(FRAME_METADATA, metadata)
+            self._frame(FRAME_PCM, first)
+            try:
+                for current_rate, chunk in chunks:
+                    if current_rate != sample_rate:
+                        raise ProtocolError("sample_rate_changed", "PCM 流采样率发生变化", 422)
+                    self._frame(FRAME_PCM, chunk)
+            except ProtocolError as exc:
+                self._frame(FRAME_ERROR, _json_bytes({"code": exc.code, "message": exc.message}))
+                return
+            except Exception:
+                self._frame(FRAME_ERROR, _json_bytes({"code": "stream_failed", "message": "GPU 音频流中断"}))
+                return
+            self._frame(FRAME_END, b"")
+
+        def _frame(self, kind: int, payload: bytes) -> None:
+            self.wfile.write(FRAME_HEADER.pack(kind, len(payload)))
+            if payload:
+                self.wfile.write(payload)
             self.wfile.flush()
-            for current_rate, chunk in chunks:
-                if current_rate != sample_rate:
-                    raise ProtocolError("sample_rate_changed", "PCM 流采样率发生变化", 422)
-                self.wfile.write(chunk)
-                self.wfile.flush()
 
     return ThreadingHTTPServer((host, int(port)), Handler)
 
@@ -132,12 +157,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="BiliLiveTool GPT-SoVITS GPU sidecar")
     parser.add_argument("--host", required=True)
     parser.add_argument("--port", required=True, type=int)
-    parser.add_argument("--token", required=True)
+    parser.add_argument("--token-stdin", action="store_true")
     parser.add_argument("--allowed-root", required=True)
     args = parser.parse_args()
+    if not args.token_stdin:
+        raise SystemExit("token pipe is required")
+    token = sys.stdin.readline().strip()
     runtime_root = Path(__file__).resolve().parent.parent
     engine = GpuVoiceEngine(runtime_root, Path(args.allowed_root))
-    server = create_server(args.host, args.port, args.token, engine)
+    server = create_server(args.host, args.port, token, engine)
     try:
         server.serve_forever(poll_interval=0.1)
     finally:

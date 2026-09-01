@@ -35,7 +35,48 @@
 - macOS：使用内置 `say`；
 - Linux：使用 `espeak-ng` 或 `espeak`，未安装时界面会给出提示。
 
-系统语音播报仅占用少量 CPU 和内存，不使用 GPU 或云服务器。选择个性化音色时，程序会按需启动独立的 GPT-SoVITS GPU 运行时；停用个性化音色或退出程序后，侧车进程结束并释放显存。
+系统语音播报仅占用少量 CPU 和内存，不使用 GPU 或云服务器。个性化音色可选择 Style-Bert-VITS2 AIVMX CPU 实时模式或 GPT-SoVITS GPU 高质量模式；停用个性化音色或退出程序后，对应侧车进程结束并释放内存/显存。
+
+### 导入 AIVMX 实时 CPU 音色
+
+进入“弹幕”页面，点击音色选择框右侧的 `导入`，默认打开 `实时 CPU 音色`：
+
+1. 选择一个包含 ONNX 模型、配置和风格向量的 `.aivmx`；不需要再选参考 WAV、JSON 或权重；
+2. 确认训练、合成语音与公开直播使用权限，然后点击 `导入音色`；
+3. 选择并安装独立 CPU 运行时 ZIP；
+4. 点击 `中文试听验证`。试听固定使用中文原文和中文发音；
+5. 验证通过后点击 `刷新音色下拉框`，回到弹幕页手动选择音色，再使用顶部的语音播报开关启动。刷新按钮不会选择音色，也不会自动启动播报。
+
+实时 CPU 模式固定使用 ONNX Runtime 的 `CPUExecutionProvider`，默认最多 4 个推理线程、单路顺序合成，语音侧车以低于正常的进程优先级运行。它不加载 Torch/CUDA，语音推理显存为 0 MB；网页/Qt 界面自身仍可能因硬件加速占用少量显存。停用播报会退出 CPU 侧车并释放运行时内存。
+
+在 Windows PowerShell 中把便携 CPU 运行时构建到 D 盘：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_cpu_runtime.ps1 `
+  -OutputRoot "D:\BiliLiveCpuRuntimeBuild" `
+  -CacheRoot "D:\BiliLiveCpuRuntimeBuild\.build-cache\cpu-runtime" `
+  -Source China `
+  -AllowUnsignedDevelopment
+```
+
+这不会创建 Conda 环境，也不会修改系统 Python、注册表或 PATH。路径分别是：
+
+```text
+构建缓存：D:\BiliLiveCpuRuntimeBuild\.build-cache\cpu-runtime\
+构建临时目录：D:\BiliLiveCpuRuntimeBuild\.build-temp\cpu-runtime\
+便携运行时目录：D:\BiliLiveCpuRuntimeBuild\.build-temp\cpu-runtime\stage\style-bert-vits2-cpu\
+Release ZIP：D:\BiliLiveCpuRuntimeBuild\BiliLiveTool-Style-Bert-VITS2-CPU-<version>.zip
+```
+
+`-Source China` 默认使用清华 PyPI 镜像与 `hf-mirror.com`；`-Source Official` 可切回官方源。脚本固定 Style-Bert-VITS2 与 aivmlib 源码提交、Python 3.11 便携发行版、CPU-only 依赖哈希，以及中文 ONNX BERT/分词器哈希；镜像内容也必须通过相同 SHA-256 校验，不包含用户音色。开发 ZIP 可用 `-AllowUnsignedDevelopment`。正式发布必须改用 `-PrivateKeyPath`，并通过 `-SigningPython` 指定一个已安装 `cryptography` 的构建环境；精简运行时本身不携带签名依赖。验证命令：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify_cpu_runtime.ps1 `
+  -RuntimeRoot "D:\BiliLiveCpuRuntimeBuild\.build-temp\cpu-runtime\stage\style-bert-vits2-cpu" `
+  -AllowUnsignedDevelopment
+```
+
+软件导入后，默认保存到 `%LOCALAPPDATA%\BiliLiveTool\runtimes\.cpu\style-bert-vits2-cpu\`；如果界面中选择了运行时数据盘，则保存在该目录的 `.cpu\style-bert-vits2-cpu\` 下。桌面 EXE 与 CPU 运行时分开发行，未使用个性化音色的用户无需下载运行时 ZIP。
 
 ### 导入 GPT-SoVITS 个性化音色
 
@@ -74,9 +115,16 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_gpu_runtime.ps1 `
 D:\BiliLiveRuntimeBuild\artifacts\BiliLiveTool-GPT-SoVITS-CU126-<version>.zip
 ```
 
-如果系统没有 Python 3.10，脚本会校验并安装固定的 Python 3.10.11 到 `BuildRoot`，不会修改系统 Python 或 PATH。已有 `pretrained_models.zip` 时可通过 `-PretrainedModelsArchive` 复用数据盘上的归档，避免重复下载。
+脚本会校验并解压固定的 Python 3.10 独立发行版到 `BuildRoot`，不会修改系统 Python、注册表或 PATH。已有 `pretrained_models.zip` 时可通过 `-PretrainedModelsArchive` 复用数据盘上的归档，避免重复下载。
 
-3060 Laptop 6GB 的真实测试中，音色冷加载约 100 秒，热态短弹幕首包约 1.04 秒、整句约 1.24 秒，运行时报告峰值显存约 1.7GB；关闭个性化语音后侧车退出。完整记录见 [`docs/gpu-runtime-benchmark.md`](docs/gpu-runtime-benchmark.md)。
+运行时 ZIP 超过 GitHub 单文件限制时，构建器会同时输出 `*.zip.parts` 目录（每卷不超过 1900 MiB）和 `parts-manifest.json`。下载全部分卷后，先重组并校验，再在应用中导入生成的完整 ZIP：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\join_gpu_runtime_parts.ps1 `
+  -ManifestPath ".\BiliLiveTool-GPT-SoVITS-CU126-<version>.zip.parts\parts-manifest.json"
+```
+
+3060 Laptop 6GB 的原生 Windows 便携运行时测试中，侧车启动约 6.35 秒、音色加载约 25.97 秒，热态短弹幕首包约 1.56 秒、整句约 1.72 秒，运行时报告峰值显存约 1.7GB；关闭个性化语音后侧车进程和显存均释放。完整记录见 [`docs/gpu-runtime-benchmark.md`](docs/gpu-runtime-benchmark.md)。
 
 发布包必须使用 Ed25519 私钥签名，私钥不得提交到 Git。仅本机开发验证时可用 `-AllowUnsignedDevelopment`，同时以环境变量 `BILILIVE_ALLOW_UNSIGNED_RUNTIME=1` 启动源码版应用。桌面界面第 4 步可以选择运行时 ZIP、已解压目录以及运行时数据盘位置。
 
@@ -84,7 +132,7 @@ D:\BiliLiveRuntimeBuild\artifacts\BiliLiveTool-GPT-SoVITS-CU126-<version>.zip
 
 ### 环境要求
 
-- **Python**: 3.9+
+- **Python**: 3.12+
 - **Node.js**: 18+
 
 ### Windows 一键封装
@@ -102,6 +150,8 @@ dist\BiliLiveTool.exe
 ```
 
 封装内容不包含账号 Cookie、本地配置、测试文件或个性化音色模型。系统语音可直接使用；个性化音色文件通过桌面向导导入到本地应用数据目录。
+
+Windows 便携包请完整解压到单独文件夹后再运行，不要只把 EXE 拖到下载目录或桌面根目录。程序会在 EXE 所在目录生成 `logs/`、`config.json` 等本地文件，其中配置文件可能包含账号登录信息，请勿分享整个运行目录。
 
 ### 构建步骤
 

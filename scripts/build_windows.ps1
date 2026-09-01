@@ -1,13 +1,14 @@
 [CmdletBinding()]
 param(
     [switch]$SkipFrontend,
-    [switch]$SkipInstall
+    [switch]$SkipInstall,
+    [string]$PythonPath = ""
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $WindowsVenv = Join-Path $ProjectRoot ".venv-win"
-$Python = Join-Path $WindowsVenv "Scripts\python.exe"
+$Python = if ($PythonPath) { [IO.Path]::GetFullPath($PythonPath) } else { Join-Path $WindowsVenv "Scripts\python.exe" }
 
 Push-Location $ProjectRoot
 try {
@@ -34,6 +35,9 @@ try {
     }
 
     if (-not (Test-Path $Python)) {
+        if ($PythonPath) {
+            throw "Requested Windows build Python was not found: $Python"
+        }
         $PyLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
         if (-not $PyLauncher) {
             $PyLauncher = Get-Command py -ErrorAction Stop
@@ -66,11 +70,17 @@ try {
         "--add-data", "bilibili.ico;.",
         "--add-data", "VERSION;.",
         "--hidden-import", "backend.services.system_speech_service",
+        "--collect-submodules", "backend.aivmx",
+        "--collect-submodules", "backend.cpu_runtime",
         "--collect-submodules", "backend.voice",
         "--collect-submodules", "backend.runtime",
         "--exclude-module", "torch",
         "--exclude-module", "torchaudio",
+        "--exclude-module", "onnx",
+        "--exclude-module", "onnxruntime",
+        "--exclude-module", "transformers",
         "--exclude-module", "runtime.gpt_sovits_gpu",
+        "--exclude-module", "runtime.style_bert_vits2_cpu",
         "--hidden-import", "_cffi_backend",
         "--hidden-import", "cffi",
         "--hidden-import", "qtpy",

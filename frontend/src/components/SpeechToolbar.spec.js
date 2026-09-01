@@ -12,6 +12,7 @@ const makeService = (overrides = {}) => {
     voices: [{ name: '系统默认', voiceURI: 'default', voiceKey: 'system:default', kind: 'system', lang: 'zh-CN', default: true }],
     systemVoices: [{ name: '系统默认', voiceURI: 'default', voiceKey: 'system:default', kind: 'system', lang: 'zh-CN', default: true }],
     voicePacks: [],
+    realtimeVoices: [],
     selectedVoiceKey: 'system:default',
     selectedVoiceURI: 'default',
     rate: 1,
@@ -75,10 +76,32 @@ describe('SpeechToolbar', () => {
     const wrapper = mount(SpeechToolbar, { props: { service } });
     expect(wrapper.get('[data-test="speech-status"]').text()).toContain('启动 GPU');
     expect(wrapper.get('[data-test="speech-enabled"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.get('[data-test="speech-voice"]').attributes('disabled')).toBeDefined();
 
     service.emit({ status: 'gpu_error', error: '显存不足' });
     await wrapper.vm.$nextTick();
     expect(wrapper.text()).toContain('显存不足');
+  });
+
+  it('groups realtime CPU voices separately and shows CPU preparation without GPU wording', async () => {
+    const service = makeService({
+      status: 'loading_cpu',
+      voices: [
+        { name: '系统默认', voiceKey: 'system:default', kind: 'system', lang: 'zh-CN' },
+        { name: '灰原哀实时', voiceKey: 'aivmx:model:0', kind: 'aivmx', lang: 'zh-CN' },
+        { name: '高质量音色', voiceKey: 'pack:test', kind: 'pack', lang: 'ja' },
+      ],
+    });
+    const wrapper = mount(SpeechToolbar, { props: { service } });
+
+    expect(wrapper.get('[data-test="speech-status"]').text()).toContain('启动 CPU');
+    expect(wrapper.find('optgroup[label="实时 CPU · 零显存"]').exists()).toBe(true);
+    expect(wrapper.find('optgroup[label="高质量 GPU"]').exists()).toBe(true);
+    expect(wrapper.get('[data-test="speech-enabled"]').attributes('disabled')).toBeDefined();
+
+    service.emit({ status: 'cpu_error', error: 'CPU 运行时缺失' });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain('CPU 运行时缺失');
   });
 
   it('shows an unsupported explanation and disables enable control', () => {

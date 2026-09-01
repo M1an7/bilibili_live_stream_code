@@ -3,6 +3,8 @@ import asyncio
 import threading
 import sys
 import os
+import shutil
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from backend.bilibili_api import BilibiliApi
@@ -15,7 +17,24 @@ from backend.services.auth_service import AuthService
 from backend.services.danmu_service import DanmuService
 from backend.services.system_speech_service import SystemSpeechService
 from backend.services.personalized_speech_service import PersonalizedSpeechService
+from backend.services.aivmx_speech_service import AivmxSpeechService
 from backend.services.streaming_audio_player import AudioPlaybackError, StreamingAudioPlayer
+from backend.aivmx import (
+    AivmxContractError,
+    AivmxHealthStore,
+    AivmxInstallJobManager,
+    AivmxMetadataReader,
+    AivmxVoiceRegistry,
+    sha256_file as sha256_aivmx,
+)
+from backend.cpu_runtime import (
+    CpuRuntimeContractError,
+    CpuRuntimeInstaller,
+    CpuRuntimeInstallJobManager,
+    CpuRuntimeManager,
+    CpuRuntimeRegistry,
+    CpuRuntimeVerifier,
+)
 from backend.runtime import (
     GpuRuntimeManager,
     RuntimeContractError,
@@ -34,6 +53,7 @@ from backend.voice import (
     VoiceStoragePaths,
 )
 from backend.voice.health import VoiceHealthStore
+from backend.voice.validator import is_link_or_reparse
 
 logger = logging.getLogger("ApiService")
 
@@ -104,11 +124,13 @@ class ApiService:
         allow_unsigned = os.environ.get("BILILIVE_ALLOW_UNSIGNED_RUNTIME", "").strip() == "1"
         self.runtime_verifier = RuntimeVerifier(allow_unsigned=allow_unsigned)
         self.runtime_registry = RuntimeRegistry(self.voice_paths, self.runtime_verifier)
+        self.voice_registry.set_runtime_registry(self.runtime_registry)
         self.runtime_installer = RuntimeInstaller(self.voice_paths, self.runtime_verifier)
         self.runtime_jobs = RuntimeInstallJobManager(self.runtime_installer, self.runtime_registry)
         self.gpu_runtime_manager = GpuRuntimeManager(
             self.voice_paths.logs,
             self.voice_paths.voices,
+            runtime_verifier=self.runtime_verifier,
         )
         self.voice_health = VoiceHealthStore(self.voice_paths)
         self.personalized_speech = PersonalizedSpeechService(
@@ -119,6 +141,46 @@ class ApiService:
             StreamingAudioPlayer(),
             self.voice_health,
         )
+        self.aivmx_reader = AivmxMetadataReader()
+        self.aivmx_registry = AivmxVoiceRegistry(self.voice_paths, self.aivmx_reader)
+        self.aivmx_jobs = AivmxInstallJobManager(self.aivmx_registry)
+        self.cpu_runtime_verifier = CpuRuntimeVerifier(allow_unsigned=allow_unsigned)
+        self.cpu_runtime_registry = CpuRuntimeRegistry(self.voice_paths, self.cpu_runtime_verifier)
+        self.cpu_runtime_installer = CpuRuntimeInstaller(self.voice_paths, self.cpu_runtime_verifier)
+        self.cpu_runtime_jobs = CpuRuntimeInstallJobManager(self.cpu_runtime_installer, self.cpu_runtime_registry)
+        self.cpu_runtime_manager = CpuRuntimeManager(
+            self.voice_paths.logs,
+            self.voice_paths.aivmx_voices,
+            runtime_verifier=self.cpu_runtime_verifier,
+        )
+        self.aivmx_health = AivmxHealthStore(self.voice_paths)
+        self.aivmx_speech = AivmxSpeechService(
+            self.voice_paths,
+            self.aivmx_registry,
+            self.cpu_runtime_registry,
+            self.cpu_runtime_manager,
+            StreamingAudioPlayer(),
+            self.aivmx_health,
+        )
+
+    def _shutdown_voice_services(self, include_voice_jobs=True):
+        for name in ("personalized_speech", "aivmx_speech"):
+            service = getattr(self, name, None)
+            if service:
+                try:
+                    service.shutdown()
+                except Exception:
+                    logger.exception("Failed to shut down %s", name)
+        job_names = ["runtime_jobs", "aivmx_jobs", "cpu_runtime_jobs"]
+        if include_voice_jobs:
+            job_names.insert(0, "voice_jobs")
+        for name in job_names:
+            jobs = getattr(self, name, None)
+            if jobs:
+                try:
+                    jobs.shutdown()
+                except Exception:
+                    logger.exception("Failed to shut down %s", name)
 
     def _start_loop(self, loop):
         asyncio.set_event_loop(loop)
@@ -152,6 +214,7 @@ class ApiService:
             self.live_service.stop_live()
 
         asyncio.run_coroutine_threadsafe(self.danmu_service.stop(), self.loop)
+        self._shutdown_voice_services()
         return self.window_service.window_close(lambda: self.config_manager.save())
     def get_window_position(self): return self.window_service.get_window_position()
     def window_drag(self, target_x, target_y): return self.window_service.window_drag(target_x, target_y)
@@ -218,6 +281,12 @@ class ApiService:
         try:
             if isinstance(voice_key, str) and voice_key.startswith("pack:"):
                 return self.personalized_speech.speak(text, voice_key, volume=volume, rate=rate)
+            if isinstance(voice_key, str) and voice_key.startswith("aivmx:"):
+                return self.aivmx_speech.speak(text, voice_key, volume=volume, rate=rate)
+            if voice_key and not str(voice_key).startswith("system:"):
+                raise SidecarError("invalid_voice_key", "语音音色标识无效")
+            if isinstance(voice_key, str) and voice_key.startswith("system:") and not voice_uri:
+                voice_uri = voice_key[7:]
             return self.speech_service.speak(text, voice_uri, rate, volume)
         except Exception as exc:
             return self._voice_error(exc)
@@ -225,12 +294,20 @@ class ApiService:
     def stop_speech(self):
         system_result = self.speech_service.stop()
         self.personalized_speech.stop()
+        self.aivmx_speech.stop()
         return system_result
 
     # --- Personalized Voice Pack Methods ---
     @staticmethod
     def _voice_error(exc):
-        if isinstance(exc, (VoiceContractError, RuntimeContractError, SidecarError, AudioPlaybackError)):
+        if isinstance(exc, (
+            VoiceContractError,
+            RuntimeContractError,
+            AivmxContractError,
+            CpuRuntimeContractError,
+            SidecarError,
+            AudioPlaybackError,
+        )):
             return {
                 "code": -1,
                 "msg": exc.message,
@@ -249,6 +326,7 @@ class ApiService:
             "sovits": ("SoVITS 权重 (*.pth)",),
             "reference": ("PCM WAV 音频 (*.wav)",),
             "license": ("授权说明 (*.txt;*.md;*.pdf)", "所有文件 (*.*)"),
+            "aivmx": ("AIVMX 实时 CPU 音色 (*.aivmx)",),
         }
         if kind not in filters:
             return self._voice_error(VoiceContractError("invalid_source_kind", "不支持的文件选择类型"))
@@ -295,7 +373,53 @@ class ApiService:
 
     def list_voice_packs(self):
         try:
+            self.voice_registry.refresh()
             return {"code": 0, "data": self.voice_registry.list_packs()}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    # --- AIVMX Realtime CPU Voice Methods ---
+    def inspect_aivmx(self, path):
+        try:
+            source = Path(str(path or ""))
+            metadata = self.aivmx_reader.read(source)
+            data = metadata.to_dict()
+            data.update({"sha256": sha256_aivmx(source), "size_bytes": source.stat().st_size})
+            return {"code": 0, "data": data}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def start_aivmx_install(self, request):
+        try:
+            return {"code": 0, "data": {"job_id": self.aivmx_jobs.start(request)}}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def get_aivmx_job(self, job_id):
+        try:
+            return {"code": 0, "data": self.aivmx_jobs.get(job_id)}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def list_aivmx_voices(self):
+        try:
+            self.aivmx_registry.refresh()
+            voices = self.aivmx_registry.list_voices()
+            for voice in voices:
+                record = self.aivmx_registry.get(voice["model_uuid"])
+                runtime = self.cpu_runtime_registry.find_compatible(record.metadata.architecture, "zh-CN") if record else None
+                state = self.aivmx_health.get(record, voice["style_id"], runtime) if record else {
+                    "health": "runtime_required",
+                    "message": "AIVMX 音色不可用",
+                }
+                voice.update({
+                    "health": state["health"],
+                    "selectable": state["health"] == "ready",
+                    "message": state["message"],
+                    "runtime_id": getattr(runtime, "runtime_id", ""),
+                    "metrics": dict(state.get("metrics", {})),
+                })
+            return {"code": 0, "data": voices}
         except Exception as exc:
             return self._voice_error(exc)
 
@@ -322,21 +446,73 @@ class ApiService:
         except Exception as exc:
             return self._voice_error(exc)
 
+    def choose_cpu_runtime_source(self, kind):
+        if kind not in ("zip", "directory"):
+            return self._voice_error(CpuRuntimeContractError("invalid_source_kind", "不支持的 CPU 运行时选择类型"))
+        try:
+            import webview
+
+            windows = getattr(webview, "windows", [])
+            if not windows:
+                raise CpuRuntimeContractError("window_unavailable", "桌面窗口尚未就绪")
+            dialog_api = getattr(webview, "FileDialog", None)
+            if kind == "zip":
+                dialog_type = dialog_api.OPEN if dialog_api else getattr(webview, "OPEN_DIALOG")
+                options = {"allow_multiple": False, "file_types": ("CPU 运行时 (*.zip)",)}
+            else:
+                dialog_type = dialog_api.FOLDER if dialog_api else getattr(webview, "FOLDER_DIALOG")
+                options = {}
+            result = windows[0].create_file_dialog(dialog_type, **options)
+            selected = str(result[0]) if isinstance(result, (tuple, list)) and result else str(result or "")
+            return {"code": 0, "data": {"path": selected}}
+        except Exception as exc:
+            return self._voice_error(exc)
+
     def configure_runtime_root(self, path):
         try:
-            target = Path(str(path)).expanduser().resolve()
-            target.mkdir(parents=True, exist_ok=True)
-            if not target.is_dir():
-                raise RuntimeContractError("invalid_runtime_root", "GPU 运行时数据目录无效")
-            self.personalized_speech.shutdown()
-            self.runtime_jobs.shutdown()
+            target = self._preflight_runtime_root(path)
+            self._shutdown_voice_services(include_voice_jobs=False)
+            previous_root = self.config_manager.data.get("runtime_root", "")
+            previous_paths = self.voice_paths
             self.config_manager.data["runtime_root"] = str(target)
             self.config_manager.save()
-            self.voice_paths = replace(self.voice_paths, runtimes=target).ensure()
-            self._initialize_gpu_services()
+            try:
+                self.voice_paths = replace(self.voice_paths, runtimes=target, cpu_runtimes=target / ".cpu").ensure()
+                self._initialize_gpu_services()
+            except Exception:
+                self.config_manager.data["runtime_root"] = previous_root
+                self.config_manager.save()
+                self.voice_paths = previous_paths
+                self._initialize_gpu_services()
+                raise
             return {"code": 0, "data": self.runtime_registry.status()}
         except Exception as exc:
             return self._voice_error(exc)
+
+    @staticmethod
+    def _preflight_runtime_root(path, minimum_free_bytes=1024**3):
+        raw = str(path or "").strip()
+        if not raw:
+            raise RuntimeContractError("invalid_runtime_root", "GPU 运行时数据目录无效")
+        candidate = Path(raw).expanduser()
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            if not candidate.is_dir() or is_link_or_reparse(candidate):
+                raise RuntimeContractError("invalid_runtime_root", "GPU 运行时数据目录无效或不安全")
+            target = candidate.resolve(strict=True)
+            probe = target / f".bililive-write-probe-{uuid.uuid4().hex}"
+            try:
+                with probe.open("xb") as stream:
+                    stream.write(b"ok")
+            finally:
+                probe.unlink(missing_ok=True)
+            if shutil.disk_usage(target).free < minimum_free_bytes:
+                raise RuntimeContractError("insufficient_disk_space", "GPU 运行时数据目录至少需要 1 GiB 可用空间")
+            return target
+        except RuntimeContractError:
+            raise
+        except OSError as exc:
+            raise RuntimeContractError("runtime_root_unwritable", "GPU 运行时数据目录不可写") from exc
 
     def start_runtime_install(self, request):
         try:
@@ -358,6 +534,45 @@ class ApiService:
         except Exception as exc:
             return self._voice_error(exc)
 
+    def start_cpu_runtime_install(self, request):
+        try:
+            return {"code": 0, "data": {"job_id": self.cpu_runtime_jobs.start(request)}}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def get_cpu_runtime_job(self, job_id):
+        try:
+            return {"code": 0, "data": self.cpu_runtime_jobs.get(job_id)}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def get_cpu_runtime_status(self):
+        try:
+            data = self.cpu_runtime_registry.status()
+            data["process"] = self.cpu_runtime_manager.status() if hasattr(self, "cpu_runtime_manager") else {"state": "stopped"}
+            return {"code": 0, "data": data}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def prepare_aivmx_voice(self, voice_key):
+        try:
+            return {"code": 0, "data": self.aivmx_speech.prepare(voice_key)}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def preview_aivmx_voice(self, voice_key, text=""):
+        try:
+            return {"code": 0, "data": self.aivmx_speech.preview(voice_key, text)}
+        except Exception as exc:
+            return self._voice_error(exc)
+
+    def release_aivmx_voice(self):
+        try:
+            self.aivmx_speech.shutdown()
+            return {"code": 0}
+        except Exception as exc:
+            return self._voice_error(exc)
+
     def prepare_voice(self, voice_key):
         try:
             return {"code": 0, "data": self.personalized_speech.prepare(voice_key)}
@@ -366,7 +581,7 @@ class ApiService:
 
     def preview_voice(self, voice_key, text=""):
         try:
-            return {"code": 0, "data": self.personalized_speech.prepare(voice_key, text)}
+            return {"code": 0, "data": self.personalized_speech.preview(voice_key, text)}
         except Exception as exc:
             return self._voice_error(exc)
 

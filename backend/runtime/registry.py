@@ -6,6 +6,7 @@ import json
 import os
 import stat
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,7 +21,7 @@ from .manifest import RuntimeContractError, RuntimeManifest, canonical_manifest_
 
 
 MAX_RUNTIME_FILES = 100_000
-MAX_MANIFEST_SIZE = 4 * 1024 * 1024
+MAX_MANIFEST_SIZE = 16 * 1024 * 1024
 
 
 def current_platform_id() -> str:
@@ -130,9 +131,19 @@ class RuntimeVerifier:
         if actual != allowed:
             detail = "、".join(sorted(actual.symmetric_difference(allowed)))
             raise RuntimeContractError("file_contract_mismatch", f"运行时文件与清单不一致：{detail}")
-        for relative, expected in manifest.files.items():
-            if _sha256(root / relative) != expected:
-                raise RuntimeContractError("hash_mismatch", f"运行时文件校验失败：{relative}")
+        file_entries = list(manifest.files.items())
+        worker_count = min(8, max(1, os.cpu_count() or 1), max(1, len(file_entries)))
+
+        def verify_hash(entry: tuple[str, str]) -> tuple[str, str, str]:
+            relative, expected = entry
+            return relative, expected, _sha256(root / relative)
+
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="runtime-hash") as pool:
+            for offset in range(0, len(file_entries), 512):
+                batch = file_entries[offset:offset + 512]
+                for relative, expected, actual_hash in pool.map(verify_hash, batch):
+                    if actual_hash != expected:
+                        raise RuntimeContractError("hash_mismatch", f"运行时文件校验失败：{relative}")
         return RuntimeRecord(root, manifest, signed)
 
 

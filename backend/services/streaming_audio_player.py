@@ -96,7 +96,7 @@ class StreamingAudioPlayer:
                         raise AudioPlaybackError("capture_too_large", "试听音频超过本地缓存限制")
                     captured.extend(block)
             if played == 0:
-                raise AudioPlaybackError("empty_audio", "GPU 运行时没有返回音频")
+                raise AudioPlaybackError("empty_audio", "语音运行时没有返回音频")
             return PlaybackResult(played, bytes(captured))
         finally:
             try:

@@ -92,7 +92,15 @@ const simulateDanmu = () => {
 };
 
 const handleVoiceInstalled = async () => {
-  await speechService.refreshVoicePacks?.();
+  await Promise.all([
+    speechService.refreshVoicePacks?.(),
+    speechService.refreshAivmxVoices?.(),
+  ]);
+};
+
+const handleVoiceRefresh = async () => {
+  await speechService.refreshAivmxVoices?.();
+  voiceImportVisible.value = false;
 };
 
 // 使用 onActivated/onDeactivated 替代 onMounted/onUnmounted
@@ -129,6 +137,7 @@ onActivated(() => {
       :bridge="bridge"
       @close="voiceImportVisible = false"
       @installed="handleVoiceInstalled"
+      @refresh-voices="handleVoiceRefresh"
     />
 
     <div class="message-list" ref="messageListRef" @scroll="handleScroll">

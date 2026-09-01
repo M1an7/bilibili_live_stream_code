@@ -2,11 +2,17 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$BuildRoot,
+    [string]$BuildTempRoot = "",
     [ValidateSet("HF", "HF-Mirror")]
     [string]$Source = "HF",
     [string]$OutputDirectory = "",
     [string]$PrivateKeyPath = "",
+    [string]$PinnedSourceRepository = "",
+    [string]$PythonArchivePath = "",
     [string]$PretrainedModelsArchive = "",
+    [string]$OpenJTalkArchive = "",
+    [string]$FfmpegPath = "",
+    [string]$FfprobePath = "",
     [switch]$AllowUnsignedDevelopment,
     [switch]$Resume,
     [switch]$SkipDependencies,
@@ -18,15 +24,30 @@ $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $PinnedCommit = (Get-Content (Join-Path $ProjectRoot "runtime\gpt_sovits_gpu\PINNED_GPT_SOVITS_COMMIT") -Raw).Trim()
 $BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
+$BuildTemp = if ($BuildTempRoot) { [IO.Path]::GetFullPath($BuildTempRoot) } else { Join-Path $BuildRoot "temp" }
+$BuildCache = Join-Path $BuildRoot "cache\pip"
+$BuildRuntimeCache = Join-Path $BuildRoot "cache\runtime"
+New-Item -ItemType Directory -Force -Path $BuildTemp, $BuildCache, $BuildRuntimeCache | Out-Null
+$env:TEMP = $BuildTemp
+$env:TMP = $BuildTemp
+$env:PIP_CACHE_DIR = $BuildCache
+$env:NUMBA_CACHE_DIR = $BuildRuntimeCache
+$env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $BuildRoot "artifacts" }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $SourceRoot = Join-Path $BuildRoot "source"
-$SourceCheckout = Join-Path $SourceRoot "GPT-SoVITS"
+$SourceCheckout = if ($PinnedSourceRepository) { [IO.Path]::GetFullPath($PinnedSourceRepository) } else { Join-Path $SourceRoot "GPT-SoVITS" }
 $StageRoot = Join-Path $BuildRoot "stage\gpt-sovits-cu126"
 $UpstreamRoot = Join-Path $StageRoot "upstream"
-$RuntimePython = Join-Path $StageRoot "python\Scripts\python.exe"
-$PythonInstallerSha256 = "d8dede5005564b408ba50317108b765ed9c3c510342a598f9fd42681cbe0648b"
+$RuntimePythonRoot = Join-Path $StageRoot "python"
+$RuntimePython = Join-Path $RuntimePythonRoot "python.exe"
+$RuntimePythonHeader = Join-Path $RuntimePythonRoot "include\Python.h"
+$PythonArchiveSha256 = "53bfafd6516115dd9e9ea7546cac5880cb77c392e89364307a204aadb5b223ac"
+$PretrainedModelsSha256 = "66274394318cbf134b78d0d5aeeccb73e96f5d43cf6876ac43560a972cb1f3fc"
+$OpenJTalkDictionarySha256 = "fe6ba0e43542cef98339abdffd903e062008ea170b04e7e2a35da805902f382a"
+$FfmpegSha256 = "b6a4d917a444790f4c06ada640c1c0c95aecde2f8953ed8d0dfb19352500bfcd"
+$FfprobeSha256 = "2da5b980a9a14a808f423d181c4ed51c2b8af11b1366699f3f7eab0609926f8f"
 
 function Assert-FreeSpace([string]$Path, [double]$MinimumGiB, [string]$Phase) {
     $DriveName = ([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Path))).TrimEnd('\').TrimEnd(':')
@@ -41,19 +62,51 @@ function Invoke-Checked([scriptblock]$Command, [string]$Description) {
     if ($LASTEXITCODE -ne 0) { throw "$Description failed with exit code $LASTEXITCODE" }
 }
 
-function Download-File([string]$Uri, [string]$Destination) {
-    if ($Resume -and (Test-Path $Destination)) { return }
-    Write-Host "Downloading $(Split-Path $Destination -Leaf)"
-    Invoke-WebRequest -Uri $Uri -OutFile $Destination
+function Enable-MsvcEnvironment {
+    $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $VsWhere)) { throw "Visual Studio C++ Build Tools are required to build pyopenjtalk" }
+    $Installation = (& $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+    $DevCmd = Join-Path $Installation "Common7\Tools\VsDevCmd.bat"
+    if (-not $Installation -or -not (Test-Path $DevCmd)) { throw "Visual Studio C++ Build Tools are required to build pyopenjtalk" }
+    $Variables = & cmd.exe /s /c "`"$DevCmd`" -no_logo -arch=x64 -host_arch=x64 >nul && set"
+    if ($LASTEXITCODE -ne 0) { throw "Unable to initialize the Visual Studio C++ build environment" }
+    foreach ($Line in $Variables) {
+        if ($Line -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process") }
+    }
+    $env:TEMP = $BuildTemp
+    $env:TMP = $BuildTemp
+    $env:PIP_CACHE_DIR = $BuildCache
+    $Compiler = Get-Command cl.exe -ErrorAction Stop
+    if (-not (Get-Command nmake.exe -ErrorAction SilentlyContinue)) { throw "NMake was not found in the Visual Studio C++ build environment" }
+    $env:CC = $Compiler.Source
+    $env:CXX = $Compiler.Source
+    $env:CMAKE_GENERATOR = "NMake Makefiles"
+}
+
+function Assert-FileHash([string]$Path, [string]$ExpectedSha256) {
+    if (-not (Test-Path $Path -PathType Leaf)) { throw "Required download is missing: $Path" }
+    $Actual = (Get-FileHash -Algorithm SHA256 $Path).Hash.ToLowerInvariant()
+    if ($Actual -ne $ExpectedSha256) { throw "Checksum verification failed: $(Split-Path $Path -Leaf)" }
+}
+
+function Download-File([string]$Uri, [string]$Destination, [string]$ExpectedSha256) {
+    if (-not ($Resume -and (Test-Path $Destination))) {
+        Write-Host "Downloading $(Split-Path $Destination -Leaf)"
+        Invoke-WebRequest -Uri $Uri -OutFile $Destination
+    }
+    Assert-FileHash $Destination $ExpectedSha256
 }
 
 Assert-FreeSpace $BuildRoot 18 "start"
 New-Item -ItemType Directory -Force -Path $SourceRoot | Out-Null
 if (-not (Test-Path (Join-Path $SourceCheckout ".git"))) {
+    if ($PinnedSourceRepository) { throw "Pinned source repository is not a Git checkout: $SourceCheckout" }
     Invoke-Checked { git clone --filter=blob:none --no-checkout https://github.com/RVC-Boss/GPT-SoVITS.git $SourceCheckout } "GPT-SoVITS clone"
 }
-Invoke-Checked { git -C $SourceCheckout fetch --depth 1 origin $PinnedCommit } "pinned source fetch"
-$ResolvedCommit = (& git -C $SourceCheckout rev-parse FETCH_HEAD).Trim()
+if (-not $PinnedSourceRepository) {
+    Invoke-Checked { git -C $SourceCheckout fetch --depth 1 origin $PinnedCommit } "pinned source fetch"
+}
+$ResolvedCommit = (& git -C $SourceCheckout rev-parse $PinnedCommit).Trim()
 if ($ResolvedCommit -ne $PinnedCommit) { throw "Pinned GPT-SoVITS commit verification failed" }
 
 if (-not ($Resume -and (Test-Path (Join-Path $UpstreamRoot "GPT_SoVITS")))) {
@@ -72,39 +125,24 @@ Copy-Item (Join-Path $ProjectRoot "runtime\gpt_sovits_gpu\README.md") (Join-Path
 if (-not (Test-Path (Join-Path $UpstreamRoot "LICENSE"))) { throw "Pinned upstream LICENSE is missing" }
 Assert-FreeSpace $BuildRoot 16 "source"
 
-if (-not (Test-Path $RuntimePython)) {
-    $PyLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
-    if (-not $PyLauncher) { $PyLauncher = Get-Command py -ErrorAction SilentlyContinue }
-    $CreatedRuntime = $false
-    if ($PyLauncher) {
-        & $PyLauncher.Source -3.10 -c "import sys; assert sys.version_info[:2] == (3, 10)" 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            Invoke-Checked { & $PyLauncher.Source -3.10 -m venv (Join-Path $StageRoot "python") } "Python 3.10 runtime creation"
-            $CreatedRuntime = $true
-        }
+if (-not (Test-Path $RuntimePython) -or -not (Test-Path $RuntimePythonHeader)) {
+    if ($PythonArchivePath) {
+        $PythonArchive = [IO.Path]::GetFullPath($PythonArchivePath)
+        Assert-FileHash $PythonArchive $PythonArchiveSha256
+    } else {
+        $PythonArchive = Join-Path $BuildRoot "cpython-3.10.21+20260825-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+        Download-File "https://github.com/astral-sh/python-build-standalone/releases/download/20260825/cpython-3.10.21%2B20260825-x86_64-pc-windows-msvc-install_only_stripped.tar.gz" $PythonArchive $PythonArchiveSha256
     }
-    if (-not $CreatedRuntime) {
-        $PythonHostRoot = Join-Path $BuildRoot "python310-host"
-        $PythonHost = Join-Path $PythonHostRoot "python.exe"
-        if (-not (Test-Path $PythonHost)) {
-            $PythonInstaller = Join-Path $BuildRoot "python-3.10.11-amd64.exe"
-            Download-File "https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe" $PythonInstaller
-            $InstallerHash = (Get-FileHash -Algorithm SHA256 $PythonInstaller).Hash.ToLowerInvariant()
-            if ($InstallerHash -ne $PythonInstallerSha256) { throw "Python 3.10 installer checksum verification failed" }
-            $Install = Start-Process -FilePath $PythonInstaller -ArgumentList @(
-                "/quiet", "InstallAllUsers=0", "Include_launcher=0", "Include_test=0",
-                "PrependPath=0", "Shortcuts=0", "TargetDir=`"$PythonHostRoot`""
-            ) -Wait -PassThru
-            if ($Install.ExitCode -ne 0) { throw "Python 3.10 data-disk bootstrap failed with exit code $($Install.ExitCode)" }
-        }
-        Invoke-Checked { & $PythonHost -m venv (Join-Path $StageRoot "python") } "Python 3.10 data-disk runtime creation"
-    }
+    if (Test-Path $RuntimePythonRoot) { Remove-Item -Recurse -Force $RuntimePythonRoot }
+    Invoke-Checked { tar -xzf $PythonArchive -C $StageRoot } "portable Python extraction"
+    if (-not (Test-Path $RuntimePython) -or -not (Test-Path $RuntimePythonHeader)) { throw "Portable Python archive is incomplete" }
 }
 if (-not $SkipDependencies) {
-    Invoke-Checked { & $RuntimePython -m pip install --upgrade pip wheel setuptools } "pip bootstrap"
-    Invoke-Checked { & $RuntimePython -m pip install -r (Join-Path $ProjectRoot "runtime\gpt_sovits_gpu\requirements-runtime.lock") } "CUDA 12.6 core dependency installation"
-    Invoke-Checked { & $RuntimePython -m pip install -r (Join-Path $UpstreamRoot "extra-req.txt") --no-deps } "GPT-SoVITS extra dependencies"
-    Invoke-Checked { & $RuntimePython -m pip install -r (Join-Path $UpstreamRoot "requirements.txt") } "GPT-SoVITS inference dependencies"
+    Enable-MsvcEnvironment
+    $DependencyLock = Join-Path $ProjectRoot "runtime\gpt_sovits_gpu\requirements-windows.lock"
+    Invoke-Checked {
+        & $RuntimePython -m pip install --require-hashes --extra-index-url https://download.pytorch.org/whl/cu126 -r $DependencyLock
+    } "hash-locked GPT-SoVITS dependency installation"
 }
 Assert-FreeSpace $BuildRoot 10 "dependencies"
 
@@ -113,26 +151,47 @@ if (-not $SkipDownloads) {
     if ($PretrainedModelsArchive) {
         $ModelsZip = [IO.Path]::GetFullPath($PretrainedModelsArchive)
         if (-not (Test-Path $ModelsZip -PathType Leaf)) { throw "Pretrained models archive does not exist: $ModelsZip" }
+        Assert-FileHash $ModelsZip $PretrainedModelsSha256
     } else {
         $ModelsZip = Join-Path $BuildRoot "pretrained_models.zip"
-        Download-File "$Base/pretrained_models.zip" $ModelsZip
+        Download-File "$Base/pretrained_models.zip" $ModelsZip $PretrainedModelsSha256
     }
     if (-not (Test-Path (Join-Path $UpstreamRoot "GPT_SoVITS\pretrained_models\sv"))) {
-        Expand-Archive -Path $ModelsZip -DestinationPath (Join-Path $UpstreamRoot "GPT_SoVITS")
+        Expand-Archive -Path $ModelsZip -DestinationPath (Join-Path $UpstreamRoot "GPT_SoVITS") -Force
     }
-    $OpenJTalk = Join-Path $BuildRoot "open_jtalk_dic_utf_8-1.11.tar.gz"
-    Download-File "$Base/open_jtalk_dic_utf_8-1.11.tar.gz" $OpenJTalk
+    if ($OpenJTalkArchive) {
+        $OpenJTalk = [IO.Path]::GetFullPath($OpenJTalkArchive)
+        Assert-FileHash $OpenJTalk $OpenJTalkDictionarySha256
+    } else {
+        $OpenJTalk = Join-Path $BuildRoot "open_jtalk_dic_utf_8-1.11.tar.gz"
+        Download-File "$Base/open_jtalk_dic_utf_8-1.11.tar.gz" $OpenJTalk $OpenJTalkDictionarySha256
+    }
     $OpenJTalkTarget = (& $RuntimePython -c "import os,pyopenjtalk; print(os.path.dirname(pyopenjtalk.__file__))").Trim()
     Invoke-Checked { tar -xzf $OpenJTalk -C $OpenJTalkTarget } "Open JTalk dictionary extraction"
-    Download-File "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/ffmpeg.exe" (Join-Path $UpstreamRoot "ffmpeg.exe")
-    Download-File "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/ffprobe.exe" (Join-Path $UpstreamRoot "ffprobe.exe")
+    $FfmpegTarget = Join-Path $UpstreamRoot "ffmpeg.exe"
+    $FfprobeTarget = Join-Path $UpstreamRoot "ffprobe.exe"
+    if ($FfmpegPath) {
+        Assert-FileHash ([IO.Path]::GetFullPath($FfmpegPath)) $FfmpegSha256
+        Copy-Item ([IO.Path]::GetFullPath($FfmpegPath)) $FfmpegTarget -Force
+    } else {
+        Download-File "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/ffmpeg.exe" $FfmpegTarget $FfmpegSha256
+    }
+    if ($FfprobePath) {
+        Assert-FileHash ([IO.Path]::GetFullPath($FfprobePath)) $FfprobeSha256
+        Copy-Item ([IO.Path]::GetFullPath($FfprobePath)) $FfprobeTarget -Force
+    } else {
+        Download-File "https://huggingface.co/lj1995/VoiceConversionWebUI/resolve/main/ffprobe.exe" $FfprobeTarget $FfprobeSha256
+    }
 }
 
 $RequiredRuntimeFiles = @(
     "GPT_SoVITS/pretrained_models/chinese-hubert-base/config.json",
     "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large/config.json",
     "GPT_SoVITS/pretrained_models/sv",
-    "GPT_SoVITS/pretrained_models/v2Pro",
+    "GPT_SoVITS/pretrained_models/v2Pro/s2Gv2Pro.pth",
+    "GPT_SoVITS/pretrained_models/v2Pro/s2Dv2Pro.pth",
+    "GPT_SoVITS/pretrained_models/v2Pro/s2Gv2ProPlus.pth",
+    "GPT_SoVITS/pretrained_models/v2Pro/s2Dv2ProPlus.pth",
     "GPT_SoVITS/pretrained_models/fast_langdetect/lid.176.bin",
     "ffmpeg.exe",
     "LICENSE"
@@ -140,7 +199,32 @@ $RequiredRuntimeFiles = @(
 foreach ($Relative in $RequiredRuntimeFiles) {
     if (-not (Test-Path (Join-Path $UpstreamRoot $Relative))) { throw "Required GPU runtime asset missing: $Relative" }
 }
+$JapaneseSourceRoot = Join-Path $UpstreamRoot "GPT_SoVITS"
+$JapaneseDictionary = Join-Path $JapaneseSourceRoot "text\ja_userdic\user.dict"
+$JapaneseDictionaryHash = Join-Path $JapaneseSourceRoot "text\ja_userdic\userdict.md5"
+Push-Location $JapaneseSourceRoot
+try {
+    Invoke-Checked { & $RuntimePython -c "import text.japanese" } "Japanese dictionary pre-generation"
+}
+finally { Pop-Location }
+if (-not (Test-Path $JapaneseDictionary -PathType Leaf) -or -not (Test-Path $JapaneseDictionaryHash -PathType Leaf)) {
+    throw "Japanese dictionary pre-generation did not produce user.dict and userdict.md5"
+}
 Assert-FreeSpace $BuildRoot 6 "models"
+
+$RelocationProbe = Join-Path $BuildRoot "relocation-probe"
+if (Test-Path $RelocationProbe) { Remove-Item -Recurse -Force $RelocationProbe }
+Move-Item $StageRoot $RelocationProbe
+try {
+    $RelocatedPython = Join-Path $RelocationProbe "python\python.exe"
+    Invoke-Checked {
+        & $RelocatedPython -I -c "import pathlib,sys,torch,torchaudio,transformers,pyopenjtalk; root=pathlib.Path(sys.executable).parent.resolve(); assert pathlib.Path(sys.prefix).samefile(root); assert not (root/'pyvenv.cfg').exists(); assert torch.__version__.startswith('2.7.1')"
+    } "relocated runtime verification"
+    Invoke-Checked { & $RelocatedPython (Join-Path $RelocationProbe "engine\sidecar.py") --help } "relocated sidecar verification"
+}
+finally {
+    Move-Item $RelocationProbe $StageRoot
+}
 
 $BuildVersion = "$(Get-Date -Format yyyy.MM.dd)-$($PinnedCommit.Substring(0, 8))"
 $SignArgs = @(
@@ -158,7 +242,10 @@ Invoke-Checked { & $RuntimePython @SignArgs } "runtime manifest generation/signi
 
 $Artifact = Join-Path $OutputDirectory "BiliLiveTool-GPT-SoVITS-CU126-$BuildVersion.zip"
 if (Test-Path $Artifact) { Remove-Item -Force $Artifact }
-Compress-Archive -Path $StageRoot -DestinationPath $Artifact -CompressionLevel Optimal
+$StageParent = Split-Path $StageRoot -Parent
+$StageName = Split-Path $StageRoot -Leaf
+Invoke-Checked { tar -a -c -f $Artifact -C $StageParent $StageName } "GPU runtime ZIP creation"
+& (Join-Path $ProjectRoot "scripts\split_gpu_runtime.ps1") -Artifact $Artifact
 Write-Host "GPU runtime ready: $Artifact"
 Write-Host "GPU runtime size: $([Math]::Round((Get-Item $Artifact).Length / 1GB, 2)) GiB"
 Assert-FreeSpace $BuildRoot 2 "complete"

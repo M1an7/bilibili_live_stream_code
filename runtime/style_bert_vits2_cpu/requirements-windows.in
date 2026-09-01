@@ -1,0 +1,13 @@
+# Windows x86_64 / CPython 3.11, CPU-only ONNX inference.
+# aivmlib and Style-Bert-VITS2 sources are copied from pinned Git commits. This
+# file contains only the binary/runtime dependencies used by Chinese ONNX mode.
+cn2an==0.5.23
+jieba==0.42.1
+loguru==0.7.3
+onnx==1.18.0
+onnxruntime==1.22.1
+numpy==1.26.4
+pydantic==2.11.7
+pypinyin==0.55.0
+pyworld-prebuilt
+transformers==4.47.1

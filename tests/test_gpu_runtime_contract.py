@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -15,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from backend.runtime.installer import RuntimeInstaller
 from backend.runtime.manifest import RuntimeContractError, canonical_manifest_bytes
+from backend.runtime import registry as runtime_registry
 from backend.runtime.registry import RuntimeRegistry, RuntimeVerifier
 from backend.voice.storage import VoiceStoragePaths
 
@@ -133,6 +135,32 @@ class RuntimeContractTests(unittest.TestCase):
         (fixture.root / "runtime-manifest.json").write_text(json.dumps(fixture.payload), encoding="utf-8")
         self.assert_code("invalid_signature", lambda: self.verifier(fixture).verify_directory(fixture.root))
 
+    def test_full_verification_hashes_large_file_sets_concurrently(self):
+        fixture = self.fixture()
+        for index in range(16):
+            relative = f"models/shard-{index:02d}.bin"
+            target = fixture.root / relative
+            target.write_bytes(bytes([index]) * 64)
+            fixture.payload["files"][relative] = _sha256(target)
+        (fixture.root / "runtime-manifest.json").write_text(
+            json.dumps(fixture.payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        signature = fixture.private_key.sign(canonical_manifest_bytes(fixture.payload))
+        (fixture.root / "runtime-manifest.sig").write_text(
+            base64.b64encode(signature).decode("ascii"), encoding="ascii"
+        )
+
+        real_hash = runtime_registry._sha256
+
+        def storage_latency(path):
+            time.sleep(0.05)
+            return real_hash(path)
+
+        started = time.perf_counter()
+        with mock.patch("backend.runtime.registry._sha256", side_effect=storage_latency):
+            self.verifier(fixture).verify_directory(fixture.root)
+        self.assertLess(time.perf_counter() - started, 0.5)
+
     def test_unsigned_is_rejected_unless_development_override_is_explicit(self):
         fixture = self.fixture(signed=False)
         self.assert_code("signature_required", lambda: self.verifier(fixture).verify_directory(fixture.root))
@@ -172,6 +200,26 @@ class RuntimeContractTests(unittest.TestCase):
         with mock.patch("backend.runtime.installer.shutil.disk_usage") as usage:
             usage.return_value = shutil._ntuple_diskusage(total=100, used=99, free=1)
             self.assert_code("insufficient_disk_space", lambda: installer.install_directory(fixture.root))
+            usage.assert_called_with(paths.runtimes)
+
+    def test_runtime_install_stages_on_the_runtime_target_volume(self):
+        fixture = self.fixture()
+        paths = VoiceStoragePaths.resolve(env={
+            "BILILIVE_DATA_HOME": str(self.root / "system-data"),
+            "BILILIVE_RUNTIME_HOME": str(self.root / "runtime-data"),
+        }).ensure()
+        installer = RuntimeInstaller(paths, self.verifier(fixture))
+        real_copytree = shutil.copytree
+        observed = {}
+
+        def capture_copy(source, destination, *args, **kwargs):
+            observed.setdefault("destination", Path(destination))
+            return real_copytree(source, destination, *args, **kwargs)
+
+        with mock.patch("backend.runtime.installer.shutil.copytree", side_effect=capture_copy):
+            installer.install_directory(fixture.root)
+        observed["destination"].relative_to(paths.runtimes)
+        self.assertNotEqual(paths.staging, observed["destination"].parent)
 
     def test_atomic_replace_rolls_back_existing_runtime_on_failure(self):
         first = self.fixture(build_version="old")

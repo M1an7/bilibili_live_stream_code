@@ -1,0 +1,19 @@
+diff --git a/convert_onnx.py b/convert_onnx.py
+--- a/convert_onnx.py
++++ b/convert_onnx.py
+@@ -247,6 +247,7 @@ if __name__ == "__main__":
+                 print(Rule(characters="=", style=Style(color="blue")))
+                 export_start_time = time.time()
+                 torch.onnx.export(
++                    dynamo=False,
+                     model=tts_model.net_g,
+                     args=(
+                         x_tst,
+@@ -338,6 +339,7 @@ if __name__ == "__main__":
+                 print(Rule(characters="=", style=Style(color="blue")))
+                 export_start_time = time.time()
+                 torch.onnx.export(
++                    dynamo=False,
+                     model=tts_model.net_g,
+                     args=(
+                         x_tst,

@@ -242,6 +242,65 @@ describe('createSpeechService', () => {
     expect(backend.release).toHaveBeenCalled();
   });
 
+  it('loads, prepares, speaks, and releases a realtime AIVMX CPU voice', async () => {
+    let finishSpeech;
+    const voiceKey = 'aivmx:11111111-2222-4333-8444-555555555555:0';
+    const backend = {
+      getCapabilities: vi.fn().mockResolvedValue({ code: 0, data: { supported: true, voices: [] } }),
+      listVoicePacks: vi.fn().mockResolvedValue({ code: 0, data: [] }),
+      listAivmxVoices: vi.fn().mockResolvedValue({ code: 0, data: [{
+        voice_key: voiceKey, display_name: '灰原哀实时音色', health: 'ready', selectable: true,
+        supported_output_languages: ['zh-CN'], resource_mode: 'cpu_zero_vram',
+      }] }),
+      prepareAivmx: vi.fn().mockResolvedValue({
+        code: 0, data: { health: 'ready', runtime: { metrics: { vram_mb: 0, rss_mb: 1800 } } },
+      }),
+      speak: vi.fn(() => new Promise(resolve => { finishSpeech = resolve; })),
+      stop: vi.fn().mockResolvedValue({ code: 0 }),
+      releaseAivmx: vi.fn().mockResolvedValue({ code: 0 }),
+    };
+    const desktop = createSpeechService({ synth: null, Utterance: null, backend, storage });
+
+    await desktop.initialize();
+    expect(desktop.getState().realtimeVoices).toHaveLength(1);
+    expect(desktop.getState().voices).toContainEqual(expect.objectContaining({ voiceKey, kind: 'aivmx' }));
+    desktop.setVoice(voiceKey);
+    const enabling = desktop.setEnabled(true);
+    expect(desktop.getState()).toMatchObject({ enabled: false, status: 'loading_cpu' });
+    expect(await enabling).toBe(true);
+    expect(backend.prepareAivmx).toHaveBeenCalledWith(voiceKey);
+
+    desktop.enqueue('保持中文并按中文发音朗读');
+    expect(backend.speak).toHaveBeenCalledWith('保持中文并按中文发音朗读', {
+      voiceURI: '', voiceKey, rate: 1, volume: 1,
+    });
+    finishSpeech({ code: 0 });
+    await vi.waitFor(() => expect(desktop.getState().status).toBe('ready'));
+    await desktop.setEnabled(false);
+    expect(backend.releaseAivmx).toHaveBeenCalledTimes(1);
+    expect(backend.release).toBeUndefined();
+  });
+
+  it('reports CPU preparation errors without labeling them as GPU failures', async () => {
+    const voiceKey = 'aivmx:11111111-2222-4333-8444-555555555555:0';
+    const backend = {
+      getCapabilities: vi.fn().mockResolvedValue({ code: 0, data: { supported: false, voices: [] } }),
+      listVoicePacks: vi.fn().mockResolvedValue({ code: 0, data: [] }),
+      listAivmxVoices: vi.fn().mockResolvedValue({ code: 0, data: [{
+        voice_key: voiceKey, display_name: '实时音色', health: 'ready', selectable: true,
+      }] }),
+      prepareAivmx: vi.fn().mockResolvedValue({ code: -1, msg: 'CPU 运行时缺失' }),
+      releaseAivmx: vi.fn().mockResolvedValue({ code: 0 }),
+    };
+    const desktop = createSpeechService({ synth: null, Utterance: null, backend, storage });
+    await desktop.initialize();
+    desktop.setVoice(voiceKey);
+
+    expect(await desktop.setEnabled(true)).toBe(false);
+    expect(desktop.getState()).toMatchObject({ enabled: false, status: 'cpu_error', error: 'CPU 运行时缺失' });
+    expect(desktop.getState().error).not.toContain('GPU');
+  });
+
   it('keeps personalized speech disabled when GPU preparation fails', async () => {
     const backend = {
       getCapabilities: vi.fn().mockResolvedValue({ code: 0, data: { supported: true, voices: [] } }),
@@ -277,6 +336,30 @@ describe('createSpeechService', () => {
 
     await vi.waitFor(() => expect(backend.release).toHaveBeenCalledTimes(1));
     expect(desktop.getState()).toMatchObject({ enabled: false, selectedVoiceKey: 'system:default' });
+  });
+
+  it('never enables a stale GPU preparation after the voice changes', async () => {
+    let finishPrepare;
+    const backend = {
+      getCapabilities: vi.fn().mockResolvedValue({ code: 0, data: { supported: true, voices: [{ voiceURI: 'default', name: 'Default' }] } }),
+      listVoicePacks: vi.fn().mockResolvedValue({ code: 0, data: [{
+        voice_key: 'pack:test', display_name: '测试', health: 'ready', selectable: true,
+      }] }),
+      prepare: vi.fn(() => new Promise(resolve => { finishPrepare = resolve; })),
+      stop: vi.fn().mockResolvedValue({ code: 0 }),
+      release: vi.fn().mockResolvedValue({ code: 0 }),
+    };
+    const desktop = createSpeechService({ synth: null, Utterance: null, backend, storage });
+    await desktop.initialize();
+    desktop.setVoice('pack:test');
+    const enabling = desktop.setEnabled(true);
+
+    desktop.setVoice('system:default');
+    finishPrepare({ code: 0, data: { health: 'ready' } });
+
+    expect(await enabling).toBe(false);
+    await vi.waitFor(() => expect(backend.release).toHaveBeenCalled());
+    expect(desktop.getState()).toMatchObject({ enabled: false, status: 'idle', selectedVoiceKey: 'system:default' });
   });
 
   it('waits for desktop stop confirmation before speaking the item after skip', async () => {

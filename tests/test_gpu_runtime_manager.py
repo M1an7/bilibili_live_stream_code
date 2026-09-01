@@ -50,21 +50,23 @@ class GpuRuntimeManagerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.record = runtime_record(self.root)
+        runtime_root = self.root / "runtime"
+        runtime_root.mkdir()
+        self.record = runtime_record(runtime_root)
         self.managers = []
 
     def tearDown(self):
         for manager in self.managers:
             manager.shutdown()
 
-    def manager(self, mode="normal", timeout=3.0):
+    def manager(self, mode="normal", timeout=3.0, runtime_verifier=None):
         def command(_record, host, port, token, allowed_root):
             return [
                 sys.executable,
                 str(FIXTURE),
                 "--host", host,
                 "--port", str(port),
-                "--token", token,
+                "--token-stdin",
                 "--allowed-root", str(allowed_root),
                 "--mode", mode,
             ]
@@ -74,9 +76,23 @@ class GpuRuntimeManagerTests(unittest.TestCase):
             allowed_voice_root=self.root / "voices",
             command_builder=command,
             startup_timeout=timeout,
+            runtime_verifier=runtime_verifier,
         )
         self.managers.append(instance)
         return instance
+
+    def test_reverifies_runtime_immediately_before_launch(self):
+        verified = []
+
+        class Verifier:
+            def verify_directory(self, path):
+                verified.append(Path(path))
+                return self_record
+
+        self_record = self.record
+        manager = self.manager(runtime_verifier=Verifier())
+        manager.prepare(self.record)
+        self.assertEqual([self.record.path], verified)
 
     def test_has_no_process_until_prepared_and_releases_it_on_shutdown(self):
         manager = self.manager()
@@ -87,6 +103,7 @@ class GpuRuntimeManagerTests(unittest.TestCase):
         process = manager.process
         self.assertIsNotNone(process)
         self.assertIsNone(process.poll())
+        self.assertNotIn(manager.token, " ".join(str(item) for item in process.args))
         manager.shutdown()
         self.assertEqual("stopped", manager.status()["state"])
         self.assertIsNotNone(process.poll())
@@ -99,6 +116,21 @@ class GpuRuntimeManagerTests(unittest.TestCase):
             urllib.request.urlopen(request, timeout=1)
         self.assertEqual(401, caught.exception.code)
         self.assertNotIn(manager.token, (manager.log_path.read_text("utf-8") if manager.log_path.exists() else ""))
+
+    def test_sidecar_is_cuda_scoped_and_forced_offline(self):
+        manager = self.manager()
+        manager.prepare(self.record)
+        environment = manager.client.health()["environment"]
+        self.assertEqual("0", environment["CUDA_VISIBLE_DEVICES"])
+        self.assertEqual("1", environment["PYTHONDONTWRITEBYTECODE"])
+        for key in ("HF_HUB_OFFLINE", "HF_DATASETS_OFFLINE", "TRANSFORMERS_OFFLINE"):
+            self.assertEqual("1", environment[key])
+        cache_root = (self.root / "logs" / "gpu-runtime-cache").resolve()
+        for key in ("NUMBA_CACHE_DIR", "HF_HOME", "XDG_CACHE_HOME", "MPLCONFIGDIR", "BILILIVE_GPU_CACHE_DIR"):
+            self.assertEqual(str(cache_root), environment[key])
+        self.assertFalse(str(cache_root).startswith(str(self.record.path.resolve()) + str(Path("/"))))
+        self.assertEqual("1", environment["OMP_NUM_THREADS"])
+        self.assertEqual("1", environment["MKL_NUM_THREADS"])
 
     def test_load_and_stream_pcm_with_metrics(self):
         manager = self.manager()
@@ -118,7 +150,7 @@ class GpuRuntimeManagerTests(unittest.TestCase):
         observed = {}
 
         class TimeoutClient:
-            def synthesize(self, request, on_close=None, timeout=None):
+            def synthesize(self, request, on_close=None, on_error=None, timeout=None):
                 observed["timeout"] = timeout
                 raise SidecarError("expected", "stop")
 
@@ -132,10 +164,22 @@ class GpuRuntimeManagerTests(unittest.TestCase):
     def test_structured_cuda_error_is_preserved(self):
         manager = self.manager()
         manager.prepare(self.record)
+        process = manager.process
         with self.assertRaises(SidecarError) as caught:
             manager.load_voice({"voice_id": "cuda-error"})
         self.assertEqual("cuda_out_of_memory", caught.exception.code)
         self.assertEqual("failed", manager.status()["state"])
+        self.assertIsNotNone(process.poll())
+
+    def test_synthesis_failure_terminates_the_sidecar(self):
+        manager = self.manager()
+        manager.prepare(self.record)
+        manager.load_voice({"voice_id": "haibara-jp"})
+        process = manager.process
+        with self.assertRaises(SidecarError) as caught:
+            manager.synthesize("cuda-error")
+        self.assertEqual("cuda_error", caught.exception.code)
+        self.assertIsNotNone(process.poll())
 
     def test_connection_failure_gets_exactly_one_process_restart(self):
         manager = self.manager(mode="crash-load-once")

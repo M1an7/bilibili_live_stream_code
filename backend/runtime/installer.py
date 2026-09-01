@@ -39,9 +39,11 @@ class RuntimeInstaller:
     def __init__(self, paths: VoiceStoragePaths, verifier: RuntimeVerifier):
         self.paths = paths.ensure()
         self.verifier = verifier
+        self.staging_root = self.paths.runtimes / ".staging"
+        self.staging_root.mkdir(parents=True, exist_ok=True)
 
     def _check_space(self, required: int) -> None:
-        free = shutil.disk_usage(self.paths.staging).free
+        free = shutil.disk_usage(self.paths.runtimes).free
         reserve = max(512 * 1024**2, required // 5)
         if free < required + reserve:
             raise RuntimeContractError(
@@ -53,7 +55,7 @@ class RuntimeInstaller:
         archive = Path(path)
         if not archive.is_file() or is_link_or_reparse(archive):
             raise RuntimeContractError("invalid_archive", "GPU 运行时压缩包不存在或不安全")
-        staging = self.paths.staging / f"runtime-zip-{uuid.uuid4().hex}"
+        staging = self.staging_root / f"runtime-zip-{uuid.uuid4().hex}"
         try:
             with zipfile.ZipFile(archive) as package:
                 members = package.infolist()
@@ -105,7 +107,7 @@ class RuntimeInstaller:
             if member.is_file():
                 size += member.stat().st_size
         self._check_space(size)
-        staging = self.paths.staging / f"runtime-dir-{uuid.uuid4().hex}"
+        staging = self.staging_root / f"runtime-dir-{uuid.uuid4().hex}"
         _report(progress, "copy", 5, "正在复制 GPU 运行时")
         try:
             shutil.copytree(source, staging)

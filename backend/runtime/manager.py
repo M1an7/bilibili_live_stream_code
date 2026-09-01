@@ -24,14 +24,16 @@ def _free_loopback_port() -> int:
 
 
 def _default_command(record: RuntimeRecord, host: str, port: int, token: str, allowed_root: Path) -> list[str]:
-    python = record.path / "python" / "Scripts" / "python.exe"
+    python = record.path / "python" / "python.exe"
+    if not python.is_file():
+        python = record.path / "python" / "Scripts" / "python.exe"
     entrypoint = record.path / record.manifest.entrypoint
     return [
         str(python),
         str(entrypoint),
         "--host", host,
         "--port", str(port),
-        "--token", token,
+        "--token-stdin",
         "--allowed-root", str(allowed_root),
     ]
 
@@ -46,12 +48,14 @@ class GpuRuntimeManager:
         command_builder: CommandBuilder | None = None,
         startup_timeout: float = 45.0,
         client_factory=SidecarClient,
+        runtime_verifier=None,
     ):
         self.log_directory = Path(log_directory)
         self.allowed_voice_root = Path(allowed_voice_root)
         self.command_builder = command_builder or _default_command
         self.startup_timeout = startup_timeout
         self.client_factory = client_factory
+        self.runtime_verifier = runtime_verifier
         self._lock = threading.RLock()
         self._state = "stopped"
         self._error: dict | None = None
@@ -60,6 +64,7 @@ class GpuRuntimeManager:
         self.client: SidecarClient | None = None
         self.port = 0
         self.token = ""
+        self._active_request_id = ""
         self.log_path = self.log_directory / "gpu-sidecar.log"
         self._log_stream = None
         self.metrics = {"first_pcm_ms": 0, "warmup_ms": 0, "peak_vram_mb": 0, "restart_count": 0}
@@ -76,9 +81,17 @@ class GpuRuntimeManager:
             }
 
     def prepare(self, record: RuntimeRecord) -> dict:
+        if self.runtime_verifier is not None:
+            verified = self.runtime_verifier.verify_directory(record.path)
+            if verified.manifest != record.manifest or verified.runtime_id != record.runtime_id:
+                raise SidecarError("runtime_changed", "GPU 运行时已变化，请刷新后重试")
+            record = verified
         with self._lock:
-            if self.process and self.process.poll() is None and self._record == record and self._state in ("ready", "busy"):
-                return self.status()
+            if self.process and self.process.poll() is None and self._record == record:
+                if self._state == "ready":
+                    return self.status()
+                if self._state == "busy":
+                    raise SidecarError("runtime_busy", "GPU 语音运行时正在处理其他请求")
             self._shutdown_locked(graceful=True)
             self._record = record
             self._state = "starting"
@@ -86,15 +99,34 @@ class GpuRuntimeManager:
             self.port = _free_loopback_port()
             self.token = secrets.token_urlsafe(48)
             self.log_directory.mkdir(parents=True, exist_ok=True)
+            runtime_cache = (self.log_directory / "gpu-runtime-cache").resolve()
+            runtime_cache.mkdir(parents=True, exist_ok=True)
             self.allowed_voice_root.mkdir(parents=True, exist_ok=True)
             self._log_stream = self.log_path.open("ab", buffering=0)
             command = self.command_builder(record, "127.0.0.1", self.port, self.token, self.allowed_voice_root)
             environment = os.environ.copy()
-            environment.update({"PYTHONUNBUFFERED": "1", "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"})
+            environment.update({
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "NO_PROXY": "127.0.0.1,localhost",
+                "no_proxy": "127.0.0.1,localhost",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "HF_HUB_OFFLINE": "1",
+                "HF_DATASETS_OFFLINE": "1",
+                "TRANSFORMERS_OFFLINE": "1",
+                "TOKENIZERS_PARALLELISM": "false",
+                "NUMBA_CACHE_DIR": str(runtime_cache),
+                "HF_HOME": str(runtime_cache),
+                "XDG_CACHE_HOME": str(runtime_cache),
+                "MPLCONFIGDIR": str(runtime_cache),
+                "BILILIVE_GPU_CACHE_DIR": str(runtime_cache),
+                "OMP_NUM_THREADS": "1",
+                "MKL_NUM_THREADS": "1",
+            })
             options: dict = {
                 "cwd": str(record.path),
                 "env": environment,
-                "stdin": subprocess.DEVNULL,
+                "stdin": subprocess.PIPE,
                 "stdout": self._log_stream,
                 "stderr": subprocess.STDOUT,
             }
@@ -104,6 +136,10 @@ class GpuRuntimeManager:
                 options["start_new_session"] = True
             try:
                 self.process = subprocess.Popen(command, **options)
+                if not self.process.stdin:
+                    raise OSError("sidecar token pipe unavailable")
+                self.process.stdin.write((self.token + "\n").encode("utf-8"))
+                self.process.stdin.close()
             except OSError as exc:
                 self._fail_locked(SidecarError("runtime_start_failed", "无法启动 GPU 语音运行时"))
                 raise SidecarError("runtime_start_failed", "无法启动 GPU 语音运行时") from exc
@@ -136,7 +172,7 @@ class GpuRuntimeManager:
 
     def load_voice(self, request: dict) -> dict:
         with self._lock:
-            if self._state not in ("ready", "busy") or not self.client:
+            if self._state != "ready" or not self.client:
                 raise SidecarError("runtime_not_ready", "GPU 语音运行时尚未准备好")
             self._state = "busy"
             client = self.client
@@ -158,8 +194,7 @@ class GpuRuntimeManager:
                     self.prepare(record)
                     return self.load_voice(request)
             with self._lock:
-                self._state = "failed"
-                self._error = exc.to_dict()
+                self._fail_locked(exc)
             raise
 
     def synthesize(
@@ -177,31 +212,41 @@ class GpuRuntimeManager:
 
         def complete() -> None:
             with self._lock:
+                self._active_request_id = ""
                 if self._state == "busy":
                     self._state = "ready"
+
+        def failed(error: SidecarError) -> None:
+            with self._lock:
+                self._active_request_id = ""
+                self._fail_locked(error)
 
         try:
             stream = client.synthesize(
                 {"text": text, "language": language, **options},
                 on_close=complete,
+                on_error=failed,
                 timeout=request_timeout,
             )
             with self._lock:
+                self._active_request_id = stream.request_id
                 self.metrics["first_pcm_ms"] = stream.first_pcm_ms
             return stream
         except SidecarError as exc:
             with self._lock:
-                self._state = "failed"
-                self._error = exc.to_dict()
+                self._fail_locked(exc)
             raise
 
     def cancel(self) -> None:
         with self._lock:
             client = self.client
+            request_id = self._active_request_id
             if not client or not self.process or self.process.poll() is not None:
                 return
+            if not request_id:
+                return
         try:
-            client.cancel()
+            client.cancel(request_id)
         except SidecarError:
             return
         with self._lock:
@@ -233,6 +278,7 @@ class GpuRuntimeManager:
         self.process = None
         self.client = None
         self.token = ""
+        self._active_request_id = ""
         self.port = 0
         self._close_log_locked()
         if self._state != "failed":

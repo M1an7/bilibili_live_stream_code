@@ -48,6 +48,7 @@ export const createSpeechService = ({
   let queue = [];
   let current = null;
   let playbackToken = 0;
+  let prepareGeneration = 0;
   let removeVoiceListener = null;
 
   const state = {
@@ -57,6 +58,7 @@ export const createSpeechService = ({
     voices: [],
     systemVoices: [],
     voicePacks: [],
+    realtimeVoices: [],
     selectedVoiceKey: saved.selectedVoiceKey,
     selectedVoiceURI: saved.selectedVoiceKey.startsWith('system:') ? saved.selectedVoiceKey.slice(7) : '',
     rate: saved.rate,
@@ -67,13 +69,16 @@ export const createSpeechService = ({
   };
 
   const selectedIsPack = () => state.selectedVoiceKey.startsWith('pack:');
-  const engineAvailable = () => Boolean(activeEngine || (backend && selectedIsPack()));
+  const selectedIsAivmx = () => state.selectedVoiceKey.startsWith('aivmx:');
+  const selectedIsPersonalized = () => selectedIsPack() || selectedIsAivmx();
+  const engineAvailable = () => Boolean(activeEngine || (backend && selectedIsPersonalized()));
 
   const snapshot = () => ({
     ...state,
     voices: state.voices.map(voice => ({ ...voice })),
     systemVoices: state.systemVoices.map(voice => ({ ...voice })),
     voicePacks: state.voicePacks.map(voice => ({ ...voice })),
+    realtimeVoices: state.realtimeVoices.map(voice => ({ ...voice })),
   });
 
   const notify = () => {
@@ -105,7 +110,18 @@ export const createSpeechService = ({
         default: false,
         kind: 'pack',
       }));
-    state.voices = [...state.systemVoices, ...readyPacks];
+    const readyRealtime = state.realtimeVoices
+      .filter(voice => voice.selectable && voice.health === 'ready')
+      .map(voice => ({
+        name: voice.display_name,
+        voiceURI: '',
+        voiceKey: voice.voice_key,
+        lang: (voice.supported_output_languages || ['zh-CN']).join(', '),
+        default: false,
+        kind: 'aivmx',
+        resourceMode: 'cpu_zero_vram',
+      }));
+    state.voices = [...state.systemVoices, ...readyRealtime, ...readyPacks];
   };
 
   const refreshVoices = () => {
@@ -125,7 +141,7 @@ export const createSpeechService = ({
     });
     rebuildSelectableVoices();
 
-    if (!state.selectedVoiceKey.startsWith('pack:') && !state.voices.some(voice => voice.voiceKey === state.selectedVoiceKey)) {
+    if (!selectedIsPersonalized() && !state.voices.some(voice => voice.voiceKey === state.selectedVoiceKey)) {
       const preferred = discovered.find(voice => voice.default)
         || discovered.find(voice => String(voice.lang).toLowerCase().startsWith('zh'))
         || discovered[0];
@@ -151,6 +167,21 @@ export const createSpeechService = ({
     return state.voicePacks;
   };
 
+  const refreshAivmxVoices = async () => {
+    if (!backend || typeof backend.listAivmxVoices !== 'function') return state.realtimeVoices;
+    try {
+      const result = await backend.listAivmxVoices();
+      state.realtimeVoices = result?.code === 0 && Array.isArray(result.data)
+        ? result.data.map(voice => ({ ...voice }))
+        : [];
+    } catch {
+      state.realtimeVoices = [];
+    }
+    rebuildSelectableVoices();
+    notify();
+    return state.realtimeVoices;
+  };
+
   const selectPreferredVoice = () => {
     const available = new Set(state.voices.map(voice => voice.voiceKey));
     if (available.has(state.selectedVoiceKey)) {
@@ -170,7 +201,7 @@ export const createSpeechService = ({
   const initialize = async () => {
     if (browserAvailable) {
       refreshVoices();
-      await refreshVoicePacks();
+      await Promise.all([refreshVoicePacks(), refreshAivmxVoices()]);
       selectPreferredVoice();
       notify();
       return snapshot();
@@ -182,12 +213,13 @@ export const createSpeechService = ({
     try {
       const result = await backend.getCapabilities();
       const capabilities = result?.code === 0 ? result.data : null;
-      await refreshVoicePacks();
-      const hasReadyPack = state.voicePacks.some(pack => pack.selectable && pack.health === 'ready');
+      await Promise.all([refreshVoicePacks(), refreshAivmxVoices()]);
+      const hasReadyPersonalized = [state.voicePacks, state.realtimeVoices]
+        .some(items => items.some(voice => voice.selectable && voice.health === 'ready'));
       if (!capabilities?.supported) {
-        activeEngine = hasReadyPack ? 'backend' : null;
-        state.supported = hasReadyPack;
-        state.status = hasReadyPack ? 'idle' : 'unsupported';
+        activeEngine = hasReadyPersonalized ? 'backend' : null;
+        state.supported = hasReadyPersonalized;
+        state.status = hasReadyPersonalized ? 'idle' : 'unsupported';
         state.error = capabilities?.error || result?.msg || '桌面系统语音不可用';
         selectPreferredVoice();
         notify();
@@ -250,7 +282,7 @@ export const createSpeechService = ({
     }
 
     const token = ++playbackToken;
-    const useBackend = item.voiceKey.startsWith('pack:') || activeEngine === 'backend';
+    const useBackend = item.voiceKey.startsWith('pack:') || item.voiceKey.startsWith('aivmx:') || activeEngine === 'backend';
     current = { ...item, startedAt: now(), token, playbackEngine: useBackend ? 'backend' : 'browser' };
     state.status = 'speaking';
     state.error = '';
@@ -306,31 +338,53 @@ export const createSpeechService = ({
   const setEnabled = (enabled) => {
     if (enabled && !engineAvailable()) return false;
     const nextEnabled = Boolean(enabled);
-    if (state.enabled === nextEnabled) return true;
     if (!nextEnabled) {
-      const releaseGpu = selectedIsPack();
+      const preparing = ['loading_gpu', 'loading_cpu', 'warming'].includes(state.status);
+      if (state.enabled === nextEnabled && !preparing) return true;
+      prepareGeneration += 1;
+      const releasePersonalized = selectedIsPersonalized() || preparing;
       state.enabled = false;
       clear();
-      if (releaseGpu) return Promise.resolve(backend?.release?.()).then(() => true).catch(() => true);
+      if (releasePersonalized) {
+        const release = selectedIsAivmx() ? backend?.releaseAivmx : backend?.release;
+        return Promise.resolve(release?.()).then(() => true).catch(() => true);
+      }
       return true;
     }
-    if (selectedIsPack()) {
+    if (state.enabled === nextEnabled) return true;
+    if (selectedIsPersonalized()) {
+      const generation = ++prepareGeneration;
+      const requestedVoiceKey = state.selectedVoiceKey;
+      const cpuMode = selectedIsAivmx();
+      const stale = () => generation !== prepareGeneration || state.selectedVoiceKey !== requestedVoiceKey;
+      const release = cpuMode ? backend?.releaseAivmx : backend?.release;
+      const prepare = cpuMode ? backend?.prepareAivmx : backend?.prepare;
+      const releaseStale = () => Promise.resolve(release?.()).catch(() => {});
       state.enabled = false;
-      state.status = 'loading_gpu';
+      state.status = cpuMode ? 'loading_cpu' : 'loading_gpu';
       state.error = '';
       notify();
-      return Promise.resolve(backend.prepare(state.selectedVoiceKey)).then(async (result) => {
+      return Promise.resolve(prepare?.(requestedVoiceKey)).then(async (result) => {
+        if (stale()) {
+          await releaseStale();
+          return false;
+        }
         if (result?.code !== 0) {
           state.enabled = false;
-          state.status = 'gpu_error';
-          state.error = result?.msg || 'GPU 音色准备失败';
+          state.status = cpuMode ? 'cpu_error' : 'gpu_error';
+          state.error = result?.msg || (cpuMode ? 'CPU 音色准备失败' : 'GPU 音色准备失败');
           notify();
           return false;
         }
         state.runtime = result?.data?.runtime || null;
         state.status = 'warming';
         notify();
-        await refreshVoicePacks();
+        if (cpuMode) await refreshAivmxVoices();
+        else await refreshVoicePacks();
+        if (stale()) {
+          await releaseStale();
+          return false;
+        }
         state.enabled = true;
         state.status = 'ready';
         state.error = '';
@@ -338,9 +392,13 @@ export const createSpeechService = ({
         notify();
         return true;
       }).catch((error) => {
+        if (stale()) {
+          void releaseStale();
+          return false;
+        }
         state.enabled = false;
-        state.status = 'gpu_error';
-        state.error = error?.message || 'GPU 音色准备失败';
+        state.status = cpuMode ? 'cpu_error' : 'gpu_error';
+        state.error = error?.message || (cpuMode ? 'CPU 音色准备失败' : 'GPU 音色准备失败');
         notify();
         return false;
       });
@@ -405,17 +463,24 @@ export const createSpeechService = ({
   };
 
   const setVoice = (voiceKey) => {
-    const releaseGpu = state.enabled && selectedIsPack();
+    const preparing = ['loading_gpu', 'loading_cpu', 'warming'].includes(state.status);
+    const previousKey = state.selectedVoiceKey;
+    const releasePersonalized = (state.enabled || preparing) && (previousKey.startsWith('pack:') || previousKey.startsWith('aivmx:'));
+    prepareGeneration += 1;
     const normalized = typeof voiceKey === 'string' ? voiceKey : '';
     state.selectedVoiceKey = normalized && !normalized.includes(':') ? `system:${normalized}` : normalized;
     state.selectedVoiceURI = state.selectedVoiceKey.startsWith('system:')
       ? state.selectedVoiceKey.slice(7)
       : '';
-    if (state.enabled) {
+    if (state.enabled || preparing) {
       state.enabled = false;
       clear();
     }
-    if (releaseGpu) void Promise.resolve(backend?.release?.()).catch(() => {});
+    state.error = '';
+    if (releasePersonalized) {
+      const release = previousKey.startsWith('aivmx:') ? backend?.releaseAivmx : backend?.release;
+      void Promise.resolve(release?.()).catch(() => {});
+    }
     persist();
     notify();
   };
@@ -456,6 +521,7 @@ export const createSpeechService = ({
     },
     refreshVoices,
     refreshVoicePacks,
+    refreshAivmxVoices,
     setEnabled,
     setVoice,
     setRate,
@@ -464,8 +530,10 @@ export const createSpeechService = ({
     skip,
     clear,
     destroy() {
+      prepareGeneration += 1;
       clear();
-      if (selectedIsPack()) void backend?.release?.();
+      if (selectedIsAivmx()) void backend?.releaseAivmx?.();
+      else if (selectedIsPack()) void backend?.release?.();
       removeVoiceListener?.();
       listeners.clear();
     },
@@ -497,6 +565,10 @@ const desktopBackend = typeof window !== 'undefined' ? {
     const bridge = await getDesktopBridge();
     return bridge.listVoicePacks();
   },
+  async listAivmxVoices() {
+    const bridge = await getDesktopBridge();
+    return bridge.listAivmxVoices();
+  },
   async prepare(voiceKey) {
     const bridge = await getDesktopBridge();
     return bridge.prepareVoice(voiceKey);
@@ -504,6 +576,14 @@ const desktopBackend = typeof window !== 'undefined' ? {
   async release() {
     const bridge = await getDesktopBridge();
     return bridge.releasePersonalizedVoice();
+  },
+  async prepareAivmx(voiceKey) {
+    const bridge = await getDesktopBridge();
+    return bridge.prepareAivmxVoice(voiceKey);
+  },
+  async releaseAivmx() {
+    const bridge = await getDesktopBridge();
+    return bridge.releaseAivmxVoice();
   },
 } : null;
 
